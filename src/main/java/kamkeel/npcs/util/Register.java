@@ -26,7 +26,7 @@ public class Register<T> {
     protected final String namespace;
     protected final Map<String, Supplier<T>> entries = new LinkedHashMap<>();
 
-    private Register(String registryKey, String namespace) {
+    protected Register(String registryKey, String namespace) {
         this.registryKey = registryKey;
         this.namespace = namespace;
     }
