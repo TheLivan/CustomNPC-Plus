@@ -54,7 +54,7 @@ public class VersionCompatibility {
             if (compound.hasKey("pEffect")) {
                 int effect = compound.getInteger("pEffect");
                 EnumPotionType enumPotionType = EnumPotionType.fromOrdinal(effect);
-                if (enumPotionType == EnumPotionType.Fire) {
+                if (!compound.hasKey("pBurnItem") && enumPotionType == EnumPotionType.Fire) {
                     compound.setBoolean("pBurnItem", true);
                 }
             }
