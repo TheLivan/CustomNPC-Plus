@@ -4,6 +4,7 @@ import net.minecraft.nbt.NBTBase;
 import net.minecraft.nbt.NBTTagCompound;
 import net.minecraft.nbt.NBTTagInt;
 import net.minecraft.nbt.NBTTagList;
+import noppes.npcs.constants.EnumPotionType;
 import noppes.npcs.controllers.data.Line;
 import noppes.npcs.controllers.data.Lines;
 import noppes.npcs.entity.EntityNPCInterface;
@@ -48,6 +49,14 @@ public class VersionCompatibility {
             // Fix DialogDarkenScreen
             if (compound.hasKey("DialogDarkenScreen")) {
                 compound.removeTag("DialogDarkenScreen");
+            }
+
+            if (compound.hasKey("pEffect")) {
+                int effect = compound.getInteger("pEffect");
+                EnumPotionType enumPotionType = EnumPotionType.fromOrdinal(effect);
+                if (enumPotionType == EnumPotionType.Fire) {
+                    compound.setBoolean("pBurnItem", true);
+                }
             }
         }
         if (npc.npcVersion < 12) {
