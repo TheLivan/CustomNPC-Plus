@@ -1,6 +1,7 @@
 package noppes.npcs.controllers;
 
 import kamkeel.npcs.controllers.SyncController;
+import kamkeel.npcs.controllers.sync.handlers.QuestCategorySyncHandler;
 import kamkeel.npcs.network.enums.SyncType;
 import net.minecraft.nbt.CompressedStreamTools;
 import net.minecraft.nbt.NBTTagCompound;
@@ -188,7 +189,7 @@ public class QuestController implements IQuestHandler {
                 dir.mkdirs();
         }
         categories.put(category.id, category);
-        SyncController.syncUpdate(SyncType.QUEST_CATEGORY, -1, SyncController.updateQuestCat(category));
+        SyncController.syncUpdate(SyncType.QUEST_CATEGORY, -1, QuestCategorySyncHandler.serializeCategory(category));
     }
 
     private boolean containsCategoryName(String name) {

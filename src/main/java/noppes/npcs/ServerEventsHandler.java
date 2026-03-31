@@ -4,6 +4,8 @@ import cpw.mods.fml.common.FMLCommonHandler;
 import cpw.mods.fml.common.eventhandler.SubscribeEvent;
 import cpw.mods.fml.relauncher.Side;
 import kamkeel.npcs.controllers.SyncController;
+import kamkeel.npcs.controllers.sync.handlers.CarpentryRecipeSyncHandler;
+import kamkeel.npcs.controllers.sync.handlers.WorkbenchRecipeSyncHandler;
 import kamkeel.npcs.controllers.data.energycharge.EnergyChargeTracker;
 import kamkeel.npcs.entity.EntityEnergyBarrier;
 import kamkeel.npcs.entity.EntityEnergyDome;
@@ -259,7 +261,7 @@ public class ServerEventsHandler {
                 EnumSyncAction.RELOAD,
                 -1,
                 SyncController.getCurrentRevision(SyncType.WORKBENCH_RECIPES),
-                SyncController.workbenchNBT()
+                WorkbenchRecipeSyncHandler.getInstance().serializeAll()
             ), (EntityPlayerMP) player);
         }
         if (block == CustomItems.carpentyBench && event.action == Action.RIGHT_CLICK_BLOCK && !player.worldObj.isRemote) {
@@ -268,7 +270,7 @@ public class ServerEventsHandler {
                 EnumSyncAction.RELOAD,
                 -1,
                 SyncController.getCurrentRevision(SyncType.CARPENTRY_RECIPES),
-                SyncController.carpentryNBT()
+                CarpentryRecipeSyncHandler.getInstance().serializeAll()
             ), (EntityPlayerMP) player);
         }
         if ((block == CustomItems.banner || block == CustomItems.wallBanner || block == CustomItems.sign) && event.action == Action.RIGHT_CLICK_BLOCK) {

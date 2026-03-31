@@ -32,6 +32,7 @@ import kamkeel.npcs.controllers.data.ability.type.AbilitySlam;
 import kamkeel.npcs.controllers.data.ability.type.AbilityTeleport;
 import kamkeel.npcs.controllers.data.ability.type.AbilityTrap;
 import kamkeel.npcs.controllers.data.ability.type.AbilityVortex;
+import kamkeel.npcs.network.enums.SyncType;
 import kamkeel.npcs.controllers.data.ability.type.energy.AbilityBeam;
 import kamkeel.npcs.controllers.data.ability.type.energy.AbilityDisc;
 import kamkeel.npcs.controllers.data.ability.type.energy.AbilityDome;
@@ -393,7 +394,7 @@ public class AbilityController implements IAbilityHandler {
             customAbilitiesById.put(uuid, ability);
             customAbilityRevision++;
             LogWriter.script("Saved custom ability: " + name + " [" + uuid + "]");
-            SyncController.syncAllCustomAbilities();
+            SyncController.syncAll(SyncType.CUSTOM_ABILITY);
             return true;
         } catch (Exception e) {
             LogWriter.error("Error saving custom ability: " + name, e);
@@ -478,7 +479,7 @@ public class AbilityController implements IAbilityHandler {
 
         customAbilityRevision++;
         LogWriter.script("Deleted custom ability: " + name);
-        SyncController.syncAllCustomAbilities();
+        SyncController.syncAll(SyncType.CUSTOM_ABILITY);
         return true;
     }
 
@@ -765,7 +766,7 @@ public class AbilityController implements IAbilityHandler {
             chainedAbilitiesById.put(uuid, chain);
             chainedAbilityRevision++;
             LogWriter.script("Saved chained ability: " + name + " [" + uuid + "]");
-            SyncController.syncAllChainedAbilities();
+            SyncController.syncAll(SyncType.CHAINED_ABILITY);
             return true;
         } catch (Exception e) {
             LogWriter.error("Error saving chained ability: " + name, e);
@@ -845,7 +846,7 @@ public class AbilityController implements IAbilityHandler {
 
         chainedAbilityRevision++;
         LogWriter.script("Deleted chained ability: " + name);
-        SyncController.syncAllChainedAbilities();
+        SyncController.syncAll(SyncType.CHAINED_ABILITY);
         return true;
     }
 

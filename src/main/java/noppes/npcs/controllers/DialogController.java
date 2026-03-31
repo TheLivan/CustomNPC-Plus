@@ -1,6 +1,7 @@
 package noppes.npcs.controllers;
 
 import kamkeel.npcs.controllers.SyncController;
+import kamkeel.npcs.controllers.sync.handlers.DialogCategorySyncHandler;
 import kamkeel.npcs.network.enums.SyncType;
 import net.minecraft.nbt.CompressedStreamTools;
 import net.minecraft.nbt.NBTTagCompound;
@@ -239,7 +240,7 @@ public class DialogController implements IDialogHandler {
                 dir.mkdirs();
         }
         categories.put(category.id, category);
-        SyncController.syncUpdate(SyncType.DIALOG_CATEGORY, -1, SyncController.updateDialogCat(category));
+        SyncController.syncUpdate(SyncType.DIALOG_CATEGORY, -1, DialogCategorySyncHandler.serializeCategory(category));
     }
 
     public void removeCategory(int category) {

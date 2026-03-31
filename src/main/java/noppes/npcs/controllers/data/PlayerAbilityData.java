@@ -1,7 +1,7 @@
 package noppes.npcs.controllers.data;
 
 import kamkeel.npcs.controllers.AbilityController;
-import kamkeel.npcs.controllers.SyncController;
+import kamkeel.npcs.controllers.sync.handlers.PlayerAbilitySyncHelper;
 import kamkeel.npcs.controllers.data.ability.Ability;
 import kamkeel.npcs.controllers.data.ability.enums.AbilityPhase;
 import kamkeel.npcs.controllers.data.ability.data.ChainedAbility;
@@ -496,23 +496,23 @@ public class PlayerAbilityData extends AbstractDataAbilities implements IPlayerA
 
     /**
      * Full sync of all ability state to the client.
-     * Delegates to {@link SyncController#syncAbilities(EntityPlayerMP)}.
+     * Delegates to {@link PlayerAbilitySyncHelper#syncAbilities(EntityPlayerMP)}.
      */
     public void syncToClient() {
         EntityPlayer player = playerData.player;
         if (player instanceof EntityPlayerMP) {
-            SyncController.syncAbilities((EntityPlayerMP) player);
+            PlayerAbilitySyncHelper.syncAbilities((EntityPlayerMP) player);
         }
     }
 
     /**
      * Lightweight sync of cooldown state only to the client.
-     * Delegates to {@link SyncController#syncAbilityCooldowns(EntityPlayerMP)}.
+     * Delegates to {@link PlayerAbilitySyncHelper#syncAbilityCooldowns(EntityPlayerMP)}.
      */
     public void syncCooldownToClient() {
         EntityPlayer player = playerData.player;
         if (player instanceof EntityPlayerMP) {
-            SyncController.syncAbilityCooldowns((EntityPlayerMP) player);
+            PlayerAbilitySyncHelper.syncAbilityCooldowns((EntityPlayerMP) player);
         }
     }
 
