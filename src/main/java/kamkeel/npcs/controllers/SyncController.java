@@ -10,7 +10,7 @@ import kamkeel.npcs.controllers.data.ability.data.ChainedAbility;
 import kamkeel.npcs.network.LargeAbstractPacket;
 import kamkeel.npcs.network.PacketHandler;
 import kamkeel.npcs.network.enums.EnumSyncAction;
-import kamkeel.npcs.network.enums.EnumSyncType;
+import kamkeel.npcs.network.enums.SyncType;
 import kamkeel.npcs.network.packets.data.LoginPacket;
 import kamkeel.npcs.network.packets.data.ProfileSharedQuestPacket;
 import kamkeel.npcs.network.packets.data.ability.AbilityCooldownSyncPacket;
@@ -47,11 +47,12 @@ import noppes.npcs.controllers.data.RecipeAnvil;
 import noppes.npcs.controllers.data.RecipeCarpentry;
 
 import java.io.IOException;
-import java.util.EnumMap;
-import java.util.EnumSet;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Supplier;
@@ -60,7 +61,7 @@ public class SyncController {
 
     public static boolean DEBUG_SYNC_LOGGING = false;
 
-    private static final EnumMap<EnumSyncType, SyncCacheEntry> cacheEntries = new EnumMap<>(EnumSyncType.class);
+    private static final Map<SyncType, SyncCacheEntry> cacheEntries = new LinkedHashMap<>();
     private static final ConcurrentHashMap<UUID, PlayerSyncState> playerSyncState = new ConcurrentHashMap<>();
 
 
@@ -70,35 +71,35 @@ public class SyncController {
         }
     }
 
-    private static final EnumSyncType[] LOGIN_SYNC_TYPES = new EnumSyncType[]{
-        EnumSyncType.FACTION,
-        EnumSyncType.DIALOG_CATEGORY,
-        EnumSyncType.QUEST_CATEGORY,
-        EnumSyncType.WORKBENCH_RECIPES,
-        EnumSyncType.CARPENTRY_RECIPES,
-        EnumSyncType.ANVIL_RECIPES,
-        EnumSyncType.CUSTOM_EFFECTS,
-        EnumSyncType.MAGIC,
-        EnumSyncType.MAGIC_CYCLE,
-        EnumSyncType.CUSTOM_ABILITY,
-        EnumSyncType.CHAINED_ABILITY
+    private static final SyncType[] LOGIN_SYNC_TYPES = new SyncType[]{
+        SyncType.FACTION,
+        SyncType.DIALOG_CATEGORY,
+        SyncType.QUEST_CATEGORY,
+        SyncType.WORKBENCH_RECIPES,
+        SyncType.CARPENTRY_RECIPES,
+        SyncType.ANVIL_RECIPES,
+        SyncType.CUSTOM_EFFECTS,
+        SyncType.MAGIC,
+        SyncType.MAGIC_CYCLE,
+        SyncType.CUSTOM_ABILITY,
+        SyncType.CHAINED_ABILITY
     };
 
     public static void load() {
         cacheEntries.clear();
         playerSyncState.clear();
 
-        registerCache(EnumSyncType.FACTION, SyncController::factionsNBT);
-        registerCache(EnumSyncType.DIALOG_CATEGORY, SyncController::dialogCategoriesNBT);
-        registerCache(EnumSyncType.QUEST_CATEGORY, SyncController::questCategoriesNBT);
-        registerCache(EnumSyncType.WORKBENCH_RECIPES, SyncController::workbenchNBT);
-        registerCache(EnumSyncType.CARPENTRY_RECIPES, SyncController::carpentryNBT);
-        registerCache(EnumSyncType.ANVIL_RECIPES, SyncController::anvilNBT);
-        registerCache(EnumSyncType.CUSTOM_EFFECTS, SyncController::customEffectsNBT);
-        registerCache(EnumSyncType.MAGIC, SyncController::magicsNBT);
-        registerCache(EnumSyncType.MAGIC_CYCLE, SyncController::magicCyclesNBT);
-        registerCache(EnumSyncType.CUSTOM_ABILITY, SyncController::customAbilitiesNBT);
-        registerCache(EnumSyncType.CHAINED_ABILITY, SyncController::chainedAbilitiesNBT);
+        registerCache(SyncType.FACTION, SyncController::factionsNBT);
+        registerCache(SyncType.DIALOG_CATEGORY, SyncController::dialogCategoriesNBT);
+        registerCache(SyncType.QUEST_CATEGORY, SyncController::questCategoriesNBT);
+        registerCache(SyncType.WORKBENCH_RECIPES, SyncController::workbenchNBT);
+        registerCache(SyncType.CARPENTRY_RECIPES, SyncController::carpentryNBT);
+        registerCache(SyncType.ANVIL_RECIPES, SyncController::anvilNBT);
+        registerCache(SyncType.CUSTOM_EFFECTS, SyncController::customEffectsNBT);
+        registerCache(SyncType.MAGIC, SyncController::magicsNBT);
+        registerCache(SyncType.MAGIC_CYCLE, SyncController::magicCyclesNBT);
+        registerCache(SyncType.CUSTOM_ABILITY, SyncController::customAbilitiesNBT);
+        registerCache(SyncType.CHAINED_ABILITY, SyncController::chainedAbilitiesNBT);
     }
 
     public static void syncPlayer(EntityPlayerMP player) {
@@ -108,7 +109,7 @@ public class SyncController {
     private static void syncPlayerInternal(EntityPlayerMP player, boolean includePostPackets) {
         PlayerSyncState state = playerSyncState.computeIfAbsent(player.getUniqueID(), PlayerSyncState::new);
 
-        for (EnumSyncType type : LOGIN_SYNC_TYPES) {
+        for (SyncType type : LOGIN_SYNC_TYPES) {
             SyncCacheEntry entry = cacheEntries.get(type);
             if (entry == null) {
                 continue;
@@ -149,7 +150,7 @@ public class SyncController {
         EntityPlayerMP player,
         String serverKey,
         String previousServerKey,
-        Map<EnumSyncType, Integer> clientRevisions
+        Map<SyncType, Integer> clientRevisions
     ) {
         String currentServerKey = getServerCacheKey();
         PlayerSyncState state = playerSyncState.computeIfAbsent(player.getUniqueID(), PlayerSyncState::new);
@@ -196,9 +197,9 @@ public class SyncController {
         }
     }
 
-    private static EnumMap<EnumSyncType, Integer> getServerRevisionSnapshot() {
-        EnumMap<EnumSyncType, Integer> snapshot = new EnumMap<>(EnumSyncType.class);
-        for (EnumSyncType type : LOGIN_SYNC_TYPES) {
+    private static Map<SyncType, Integer> getServerRevisionSnapshot() {
+        Map<SyncType, Integer> snapshot = new LinkedHashMap<>();
+        for (SyncType type : LOGIN_SYNC_TYPES) {
             SyncCacheEntry entry = cacheEntries.get(type);
             if (entry != null) {
                 snapshot.put(type, entry.getRevisionValue());
@@ -222,7 +223,7 @@ public class SyncController {
         return SERVER_IDENTITY_KEY;
     }
 
-    public static int getCurrentRevision(EnumSyncType type) {
+    public static int getCurrentRevision(SyncType type) {
         SyncCacheEntry entry = cacheEntries.get(type);
         return entry == null ? -1 : entry.getRevisionValue();
     }
@@ -356,12 +357,12 @@ public class SyncController {
     }
 
     public static void syncAllCustomAbilities() {
-        CachedSyncPayload payload = rebuildNow(EnumSyncType.CUSTOM_ABILITY);
+        CachedSyncPayload payload = rebuildNow(SyncType.CUSTOM_ABILITY);
         if (payload == null) {
             return;
         }
-        PacketHandler.Instance.sendToAll(new SyncPacket(EnumSyncType.CUSTOM_ABILITY, payload));
-        updateAllPlayerRevisions(EnumSyncType.CUSTOM_ABILITY, payload.getRevision());
+        PacketHandler.Instance.sendToAll(new SyncPacket(SyncType.CUSTOM_ABILITY, payload));
+        updateAllPlayerRevisions(SyncType.CUSTOM_ABILITY, payload.getRevision());
     }
 
     public static NBTTagCompound chainedAbilitiesNBT() {
@@ -377,12 +378,12 @@ public class SyncController {
     }
 
     public static void syncAllChainedAbilities() {
-        CachedSyncPayload payload = rebuildNow(EnumSyncType.CHAINED_ABILITY);
+        CachedSyncPayload payload = rebuildNow(SyncType.CHAINED_ABILITY);
         if (payload == null) {
             return;
         }
-        PacketHandler.Instance.sendToAll(new SyncPacket(EnumSyncType.CHAINED_ABILITY, payload));
-        updateAllPlayerRevisions(EnumSyncType.CHAINED_ABILITY, payload.getRevision());
+        PacketHandler.Instance.sendToAll(new SyncPacket(SyncType.CHAINED_ABILITY, payload));
+        updateAllPlayerRevisions(SyncType.CHAINED_ABILITY, payload.getRevision());
     }
 
     public static void syncPlayerData(EntityPlayerMP player, boolean update) {
@@ -390,14 +391,14 @@ public class SyncController {
         if (data != null) {
             if (update) {
                 PacketHandler.Instance.sendToPlayer(new SyncPacket(
-                        EnumSyncType.PLAYERDATA,
+                        SyncType.PLAYERDATA,
                         EnumSyncAction.UPDATE,
                         -1,
                         data.getSyncNBT())
                     , player);
             } else {
                 PacketHandler.Instance.sendToPlayer(new SyncPacket(
-                    EnumSyncType.PLAYERDATA,
+                    SyncType.PLAYERDATA,
                     EnumSyncAction.RELOAD,
                     -1,
                     data.getSyncNBTFull()), player);
@@ -405,11 +406,11 @@ public class SyncController {
         }
     }
 
-    public static void syncRemove(EnumSyncType enumSyncType, int id) {
-        Map<EnumSyncType, Integer> revisions = invalidateCaches(enumSyncType);
-        int revision = revisions.getOrDefault(enumSyncType, getCurrentRevision(enumSyncType));
+    public static void syncRemove(SyncType syncType, int id) {
+        Map<SyncType, Integer> revisions = invalidateCaches(syncType);
+        int revision = revisions.getOrDefault(syncType, getCurrentRevision(syncType));
         PacketHandler.Instance.sendToAll(new SyncPacket(
-            enumSyncType,
+            syncType,
             EnumSyncAction.REMOVE,
             id,
             revision,
@@ -419,373 +420,326 @@ public class SyncController {
     }
 
     public static void syncAllDialogs() {
-        CachedSyncPayload payload = rebuildNow(EnumSyncType.DIALOG_CATEGORY);
+        CachedSyncPayload payload = rebuildNow(SyncType.DIALOG_CATEGORY);
         if (payload == null) {
             return;
         }
-        PacketHandler.Instance.sendToAll(new SyncPacket(EnumSyncType.DIALOG_CATEGORY, payload));
-        updateAllPlayerRevisions(EnumSyncType.DIALOG_CATEGORY, payload.getRevision());
+        PacketHandler.Instance.sendToAll(new SyncPacket(SyncType.DIALOG_CATEGORY, payload));
+        updateAllPlayerRevisions(SyncType.DIALOG_CATEGORY, payload.getRevision());
     }
 
     public static void syncAllQuests() {
-        CachedSyncPayload payload = rebuildNow(EnumSyncType.QUEST_CATEGORY);
+        CachedSyncPayload payload = rebuildNow(SyncType.QUEST_CATEGORY);
         if (payload == null) {
             return;
         }
-        PacketHandler.Instance.sendToAll(new SyncPacket(EnumSyncType.QUEST_CATEGORY, payload));
-        updateAllPlayerRevisions(EnumSyncType.QUEST_CATEGORY, payload.getRevision());
+        PacketHandler.Instance.sendToAll(new SyncPacket(SyncType.QUEST_CATEGORY, payload));
+        updateAllPlayerRevisions(SyncType.QUEST_CATEGORY, payload.getRevision());
     }
 
     public static void syncAllWorkbenchRecipes() {
-        CachedSyncPayload payload = rebuildNow(EnumSyncType.WORKBENCH_RECIPES);
+        CachedSyncPayload payload = rebuildNow(SyncType.WORKBENCH_RECIPES);
         if (payload == null) {
             return;
         }
-        PacketHandler.Instance.sendToAll(new SyncPacket(EnumSyncType.WORKBENCH_RECIPES, payload));
-        updateAllPlayerRevisions(EnumSyncType.WORKBENCH_RECIPES, payload.getRevision());
+        PacketHandler.Instance.sendToAll(new SyncPacket(SyncType.WORKBENCH_RECIPES, payload));
+        updateAllPlayerRevisions(SyncType.WORKBENCH_RECIPES, payload.getRevision());
     }
 
     public static void syncAllCarpentryRecipes() {
-        CachedSyncPayload payload = rebuildNow(EnumSyncType.CARPENTRY_RECIPES);
+        CachedSyncPayload payload = rebuildNow(SyncType.CARPENTRY_RECIPES);
         if (payload == null) {
             return;
         }
-        PacketHandler.Instance.sendToAll(new SyncPacket(EnumSyncType.CARPENTRY_RECIPES, payload));
-        updateAllPlayerRevisions(EnumSyncType.CARPENTRY_RECIPES, payload.getRevision());
+        PacketHandler.Instance.sendToAll(new SyncPacket(SyncType.CARPENTRY_RECIPES, payload));
+        updateAllPlayerRevisions(SyncType.CARPENTRY_RECIPES, payload.getRevision());
     }
 
     public static void syncAllAnvilRecipes() {
-        CachedSyncPayload payload = rebuildNow(EnumSyncType.ANVIL_RECIPES);
+        CachedSyncPayload payload = rebuildNow(SyncType.ANVIL_RECIPES);
         if (payload == null) {
             return;
         }
-        PacketHandler.Instance.sendToAll(new SyncPacket(EnumSyncType.ANVIL_RECIPES, payload));
-        updateAllPlayerRevisions(EnumSyncType.ANVIL_RECIPES, payload.getRevision());
+        PacketHandler.Instance.sendToAll(new SyncPacket(SyncType.ANVIL_RECIPES, payload));
+        updateAllPlayerRevisions(SyncType.ANVIL_RECIPES, payload.getRevision());
     }
 
     public static void syncAllCustomEffects() {
-        CachedSyncPayload payload = rebuildNow(EnumSyncType.CUSTOM_EFFECTS);
+        CachedSyncPayload payload = rebuildNow(SyncType.CUSTOM_EFFECTS);
         if (payload == null) {
             return;
         }
-        PacketHandler.Instance.sendToAll(new SyncPacket(EnumSyncType.CUSTOM_EFFECTS, payload));
-        updateAllPlayerRevisions(EnumSyncType.CUSTOM_EFFECTS, payload.getRevision());
+        PacketHandler.Instance.sendToAll(new SyncPacket(SyncType.CUSTOM_EFFECTS, payload));
+        updateAllPlayerRevisions(SyncType.CUSTOM_EFFECTS, payload.getRevision());
     }
 
     @SideOnly(Side.CLIENT)
-    public static void clientSync(EnumSyncType enumSyncType, int revision, NBTTagCompound fullCompound) {
-        switch (enumSyncType) {
-            case FACTION: {
-                NBTTagList list = fullCompound.getTagList("Factions", 10);
-                for (int i = 0; i < list.tagCount(); i++) {
-                    Faction faction = new Faction();
-                    faction.readNBT(list.getCompoundTagAt(i));
-                    FactionController.getInstance().factionsSync.put(faction.id, faction);
-                }
-                FactionController.getInstance().factions = FactionController.getInstance().factionsSync;
-                FactionController.getInstance().factionsSync = new HashMap<Integer, Faction>();
-                break;
-            }
-            case DIALOG_CATEGORY: {
-                if (!fullCompound.hasNoTags()) {
-                    NBTTagList categories = fullCompound.getTagList("DialogCategories", 10);
-                    for (int j = 0; j < fullCompound.getTagList("DialogCategories", 10).tagCount(); j++) {
-                        NBTTagCompound categoryCompound = categories.getCompoundTagAt(j);
-                        if (categoryCompound.hasNoTags())
-                            continue;
-
-                        DialogCategory category = new DialogCategory();
-                        category.readSmallNBT(categoryCompound.getCompoundTag("CatNBT"));
-                        NBTTagList dialogList = categoryCompound.getTagList("Data", 10);
-                        if (DialogController.Instance.categoriesSync.containsKey(category.id)) {
-                            category = DialogController.Instance.categoriesSync.get(category.id);
-                            category.readSmallNBT(categoryCompound.getCompoundTag("CatNBT"));
-                        }
-                        for (int i = 0; i < dialogList.tagCount(); i++) {
-                            Dialog dialog = new Dialog();
-                            dialog.readNBT(dialogList.getCompoundTagAt(i));
-                            dialog.category = category;
-                            category.dialogs.put(dialog.id, dialog);
-                        }
-                        DialogController.Instance.categoriesSync.put(category.id, category);
-                    }
-                }
-
-                HashMap<Integer, Dialog> dialogs = new HashMap<Integer, Dialog>();
-                for (DialogCategory category : DialogController.Instance.categoriesSync.values()) {
-                    for (Dialog dialog : category.dialogs.values()) {
-                        dialogs.put(dialog.id, dialog);
-                    }
-                }
-
-                DialogController.Instance.categories = DialogController.Instance.categoriesSync;
-                DialogController.Instance.dialogs = dialogs;
-                DialogController.Instance.categoriesSync = new HashMap<Integer, DialogCategory>();
-                break;
-            }
-            case QUEST_CATEGORY: {
-                if (!fullCompound.hasNoTags()) {
-                    NBTTagList categories = fullCompound.getTagList("QuestCategories", 10);
-                    for (int j = 0; j < fullCompound.getTagList("QuestCategories", 10).tagCount(); j++) {
-                        NBTTagCompound categoryCompound = categories.getCompoundTagAt(j);
-                        if (categoryCompound.hasNoTags())
-                            continue;
-
-                        QuestCategory category = new QuestCategory();
-                        category.readSmallNBT(categoryCompound.getCompoundTag("CatNBT"));
-                        NBTTagList questList = categoryCompound.getTagList("Data", 10);
-                        if (QuestController.Instance.categoriesSync.containsKey(category.id)) {
-                            category = QuestController.Instance.categoriesSync.get(category.id);
-                            category.readSmallNBT(categoryCompound.getCompoundTag("CatNBT"));
-                        }
-                        for (int i = 0; i < questList.tagCount(); i++) {
-                            Quest quest = new Quest();
-                            quest.readNBT(questList.getCompoundTagAt(i));
-                            quest.category = category;
-                            category.quests.put(quest.id, quest);
-                        }
-                        QuestController.Instance.categoriesSync.put(category.id, category);
-                    }
-                }
-
-                HashMap<Integer, Quest> quests = new HashMap<Integer, Quest>();
-                for (QuestCategory category : QuestController.Instance.categoriesSync.values()) {
-                    for (Quest quest : category.quests.values()) {
-                        quests.put(quest.id, quest);
-                    }
-                }
-
-                QuestController.Instance.categories = QuestController.Instance.categoriesSync;
-                QuestController.Instance.quests = quests;
-                QuestController.Instance.categoriesSync = new HashMap<Integer, QuestCategory>();
-                break;
-            }
-            case PLAYERDATA: {
-                ClientCacheHandler.playerData.setSyncNBTFull(fullCompound);
-                break;
-            }
-            case MAGIC: {
-                NBTTagList list = fullCompound.getTagList("Data", 10);
-                MagicController mc = MagicController.getInstance();
-                mc.magicSync.clear();
-                for (int i = 0; i < list.tagCount(); i++) {
-                    Magic magic = new Magic();
-                    magic.readNBT(list.getCompoundTagAt(i));
-                    mc.magicSync.put(magic.id, magic);
-                }
-
-                mc.magics.clear();
-                mc.magics.putAll(mc.magicSync);
-                mc.magicSync.clear();
-                break;
-            }
-            case MAGIC_CYCLE: {
-                NBTTagList list = fullCompound.getTagList("Data", 10);
-                MagicController mc = MagicController.getInstance();
-                mc.cyclesSync.clear();
-                for (int i = 0; i < list.tagCount(); i++) {
-                    MagicCycle cycle = new MagicCycle();
-                    cycle.readNBT(list.getCompoundTagAt(i));
-                    mc.cyclesSync.put(cycle.id, cycle);
-                }
-
-                mc.cycles.clear();
-                mc.cycles.putAll(mc.cyclesSync);
-                mc.cyclesSync.clear();
-                break;
-            }
-            case WORKBENCH_RECIPES: {
-                NBTTagList list = fullCompound.getTagList("recipes", 10);
-                if (list == null)
-                    return;
-
-                for (int i = 0; i < list.tagCount(); i++) {
-                    NBTTagCompound recipeCompound = list.getCompoundTagAt(i);
-                    RecipeCarpentry recipe = RecipeCarpentry.create(recipeCompound);
-                    recipe.readNBT(recipeCompound);
-                    RecipeController.syncRecipes.put(recipe.id, recipe);
-                }
-
-                RecipeController.reloadGlobalRecipes(RecipeController.syncRecipes);
-                RecipeController.syncRecipes = new HashMap<Integer, RecipeCarpentry>();
-                break;
-            }
-            case CARPENTRY_RECIPES: {
-                NBTTagList list = fullCompound.getTagList("recipes", 10);
-                if (list == null)
-                    return;
-
-                for (int i = 0; i < list.tagCount(); i++) {
-                    NBTTagCompound recipeCompound = list.getCompoundTagAt(i);
-                    RecipeCarpentry recipe = RecipeCarpentry.create(recipeCompound);
-                    recipe.readNBT(recipeCompound);
-                    RecipeController.syncRecipes.put(recipe.id, recipe);
-                }
-
-                RecipeController.Instance.carpentryRecipes = RecipeController.syncRecipes;
-                RecipeController.syncRecipes = new HashMap<Integer, RecipeCarpentry>();
-                break;
-            }
-            case ANVIL_RECIPES: {
-                NBTTagList list = fullCompound.getTagList("recipes", 10);
-                if (list == null)
-                    return;
-
-                for (int i = 0; i < list.tagCount(); i++) {
-                    RecipeAnvil recipe = new RecipeAnvil();
-                    recipe.readNBT(list.getCompoundTagAt(i));
-                    RecipeController.syncAnvilRecipes.put(recipe.id, recipe);
-                }
-
-                RecipeController.Instance.anvilRecipes = RecipeController.syncAnvilRecipes;
-                RecipeController.syncAnvilRecipes = new HashMap<Integer, RecipeAnvil>();
-                break;
-            }
-            case CUSTOM_EFFECTS: {
-                NBTTagList list = fullCompound.getTagList("Data", 10);
-                CustomEffectController ce = CustomEffectController.getInstance();
-                ce.customEffectsSync.clear();
-                for (int i = 0; i < list.tagCount(); i++) {
-                    CustomEffect effect = new CustomEffect();
-                    effect.readFromNBT(list.getCompoundTagAt(i));
-                    ClientCacheHandler.getImageData(effect.icon);
-                    ce.customEffectsSync.put(effect.id, effect);
-                }
-
-                ce.getCustomEffects().clear();
-                ce.getCustomEffects().putAll(ce.customEffectsSync);
-                ce.customEffectsSync.clear();
-                break;
-            }
-            case CUSTOM_ABILITY: {
-                NBTTagList list = fullCompound.getTagList("Data", 10);
-                LinkedHashMap<String, Ability> sync = new LinkedHashMap<>();
-                for (int i = 0; i < list.tagCount(); i++) {
-                    NBTTagCompound nbt = list.getCompoundTagAt(i);
-                    String name = nbt.getString("CustomAbilityId");
-                    Ability ability = AbilityController.Instance.fromNBT(nbt);
-                    if (ability != null) {
-                        ability.setName(name);
-                        sync.put(name, ability);
-                    }
-                }
-                AbilityController.Instance.setCustomAbilities(sync);
-                break;
-            }
-            case CHAINED_ABILITY: {
-                NBTTagList list = fullCompound.getTagList("Data", 10);
-                LinkedHashMap<String, ChainedAbility> sync = new LinkedHashMap<>();
-                for (int i = 0; i < list.tagCount(); i++) {
-                    NBTTagCompound nbt = list.getCompoundTagAt(i);
-                    String id = nbt.getString("ChainedAbilityId");
-                    ChainedAbility chain = new ChainedAbility();
-                    chain.readNBT(nbt);
-                    chain.setName(id);
-                    sync.put(id, chain);
-                }
-                AbilityController.Instance.setChainedAbilities(sync);
-                break;
-            }
-        }
-
-        ClientCacheHandler.updateClientRevision(enumSyncType, revision);
-    }
-
-    /**
-     * Update Related Tasks
-     */
-    @SideOnly(Side.CLIENT)
-    public static void clientUpdate(EnumSyncType enumSyncType, int category_id, int revision, NBTTagCompound compound) {
-        switch (enumSyncType) {
-            case FACTION: {
+    public static void clientSync(SyncType syncType, int revision, NBTTagCompound fullCompound) {
+        if (syncType == SyncType.FACTION) {
+            NBTTagList list = fullCompound.getTagList("Factions", 10);
+            for (int i = 0; i < list.tagCount(); i++) {
                 Faction faction = new Faction();
-                faction.readNBT(compound);
-                FactionController.getInstance().factions.put(faction.id, faction);
-                break;
+                faction.readNBT(list.getCompoundTagAt(i));
+                FactionController.getInstance().factionsSync.put(faction.id, faction);
             }
-            case DIALOG: {
-                DialogCategory category = DialogController.Instance.categories.get(category_id);
-                Dialog dialog = new Dialog();
-                dialog.category = category;
-                dialog.readNBT(compound);
-                DialogController.Instance.dialogs.put(dialog.id, dialog);
-                category.dialogs.put(dialog.id, dialog);
-                break;
-            }
-            case QUEST: {
-                QuestCategory category = QuestController.Instance.categories.get(category_id);
-                Quest quest = new Quest();
-                quest.category = category;
-                quest.readNBT(compound);
-                QuestController.Instance.quests.put(quest.id, quest);
-                category.quests.put(quest.id, quest);
-                break;
-            }
-            case QUEST_CATEGORY: {
-                QuestCategory category = new QuestCategory();
-                category.readSmallNBT(compound.getCompoundTag("CatNBT"));
-                NBTTagList list = compound.getTagList("Data", 10);
-                if (QuestController.Instance.categoriesSync.containsKey(category.id)) {
-                    category = QuestController.Instance.categoriesSync.get(category.id);
-                    category.readSmallNBT(compound.getCompoundTag("CatNBT"));
-                }
-                for (int i = 0; i < list.tagCount(); i++) {
-                    Quest quest = new Quest();
-                    quest.readNBT(list.getCompoundTagAt(i));
-                    quest.category = category;
-                    category.quests.put(quest.id, quest);
-                }
-                QuestController.Instance.categories.put(category.id, category);
-                break;
-            }
-            case DIALOG_CATEGORY: {
-                DialogCategory category = new DialogCategory();
-                category.readSmallNBT(compound.getCompoundTag("CatNBT"));
-                NBTTagList list = compound.getTagList("Data", 10);
-                if (DialogController.Instance.categoriesSync.containsKey(category.id)) {
-                    category = DialogController.Instance.categoriesSync.get(category.id);
-                    category.readSmallNBT(compound.getCompoundTag("CatNBT"));
-                }
-                for (int i = 0; i < list.tagCount(); i++) {
-                    Dialog dialog = new Dialog();
-                    dialog.readNBT(list.getCompoundTagAt(i));
-                    dialog.category = category;
-                    category.dialogs.put(dialog.id, dialog);
-                }
-                DialogController.Instance.categories.put(category.id, category);
-                break;
-            }
-            case MAGIC_CYCLE: {
-                MagicCycle cycle = new MagicCycle();
-                cycle.readNBT(compound);
-                MagicController.getInstance().cycles.put(cycle.id, cycle);
-                break;
-            }
-            case MAGIC: {
-                Magic magic = new Magic();
-                magic.readNBT(compound);
-                MagicController.getInstance().magics.put(magic.id, magic);
-                break;
-            }
-            case PLAYERDATA: {
-                ClientCacheHandler.playerData.setSyncNBT(compound);
-                break;
-            }
-            case CUSTOM_EFFECTS: {
-                CustomEffect effect = new CustomEffect();
-                effect.readFromNBT(compound);
-                ClientCacheHandler.getImageData(effect.icon);
+            FactionController.getInstance().factions = FactionController.getInstance().factionsSync;
+            FactionController.getInstance().factionsSync = new HashMap<Integer, Faction>();
+        } else if (syncType == SyncType.DIALOG_CATEGORY) {
+            if (!fullCompound.hasNoTags()) {
+                NBTTagList categories = fullCompound.getTagList("DialogCategories", 10);
+                for (int j = 0; j < fullCompound.getTagList("DialogCategories", 10).tagCount(); j++) {
+                    NBTTagCompound categoryCompound = categories.getCompoundTagAt(j);
+                    if (categoryCompound.hasNoTags())
+                        continue;
 
-                CustomEffectController.Instance.getCustomEffects().put(effect.id, effect);
-                break;
+                    DialogCategory category = new DialogCategory();
+                    category.readSmallNBT(categoryCompound.getCompoundTag("CatNBT"));
+                    NBTTagList dialogList = categoryCompound.getTagList("Data", 10);
+                    if (DialogController.Instance.categoriesSync.containsKey(category.id)) {
+                        category = DialogController.Instance.categoriesSync.get(category.id);
+                        category.readSmallNBT(categoryCompound.getCompoundTag("CatNBT"));
+                    }
+                    for (int i = 0; i < dialogList.tagCount(); i++) {
+                        Dialog dialog = new Dialog();
+                        dialog.readNBT(dialogList.getCompoundTagAt(i));
+                        dialog.category = category;
+                        category.dialogs.put(dialog.id, dialog);
+                    }
+                    DialogController.Instance.categoriesSync.put(category.id, category);
+                }
             }
+
+            HashMap<Integer, Dialog> dialogs = new HashMap<Integer, Dialog>();
+            for (DialogCategory category : DialogController.Instance.categoriesSync.values()) {
+                for (Dialog dialog : category.dialogs.values()) {
+                    dialogs.put(dialog.id, dialog);
+                }
+            }
+
+            DialogController.Instance.categories = DialogController.Instance.categoriesSync;
+            DialogController.Instance.dialogs = dialogs;
+            DialogController.Instance.categoriesSync = new HashMap<Integer, DialogCategory>();
+        } else if (syncType == SyncType.QUEST_CATEGORY) {
+            if (!fullCompound.hasNoTags()) {
+                NBTTagList categories = fullCompound.getTagList("QuestCategories", 10);
+                for (int j = 0; j < fullCompound.getTagList("QuestCategories", 10).tagCount(); j++) {
+                    NBTTagCompound categoryCompound = categories.getCompoundTagAt(j);
+                    if (categoryCompound.hasNoTags())
+                        continue;
+
+                    QuestCategory category = new QuestCategory();
+                    category.readSmallNBT(categoryCompound.getCompoundTag("CatNBT"));
+                    NBTTagList questList = categoryCompound.getTagList("Data", 10);
+                    if (QuestController.Instance.categoriesSync.containsKey(category.id)) {
+                        category = QuestController.Instance.categoriesSync.get(category.id);
+                        category.readSmallNBT(categoryCompound.getCompoundTag("CatNBT"));
+                    }
+                    for (int i = 0; i < questList.tagCount(); i++) {
+                        Quest quest = new Quest();
+                        quest.readNBT(questList.getCompoundTagAt(i));
+                        quest.category = category;
+                        category.quests.put(quest.id, quest);
+                    }
+                    QuestController.Instance.categoriesSync.put(category.id, category);
+                }
+            }
+
+            HashMap<Integer, Quest> quests = new HashMap<Integer, Quest>();
+            for (QuestCategory category : QuestController.Instance.categoriesSync.values()) {
+                for (Quest quest : category.quests.values()) {
+                    quests.put(quest.id, quest);
+                }
+            }
+
+            QuestController.Instance.categories = QuestController.Instance.categoriesSync;
+            QuestController.Instance.quests = quests;
+            QuestController.Instance.categoriesSync = new HashMap<Integer, QuestCategory>();
+        } else if (syncType == SyncType.PLAYERDATA) {
+            ClientCacheHandler.playerData.setSyncNBTFull(fullCompound);
+        } else if (syncType == SyncType.MAGIC) {
+            NBTTagList list = fullCompound.getTagList("Data", 10);
+            MagicController mc = MagicController.getInstance();
+            mc.magicSync.clear();
+            for (int i = 0; i < list.tagCount(); i++) {
+                Magic magic = new Magic();
+                magic.readNBT(list.getCompoundTagAt(i));
+                mc.magicSync.put(magic.id, magic);
+            }
+
+            mc.magics.clear();
+            mc.magics.putAll(mc.magicSync);
+            mc.magicSync.clear();
+        } else if (syncType == SyncType.MAGIC_CYCLE) {
+            NBTTagList list = fullCompound.getTagList("Data", 10);
+            MagicController mc = MagicController.getInstance();
+            mc.cyclesSync.clear();
+            for (int i = 0; i < list.tagCount(); i++) {
+                MagicCycle cycle = new MagicCycle();
+                cycle.readNBT(list.getCompoundTagAt(i));
+                mc.cyclesSync.put(cycle.id, cycle);
+            }
+
+            mc.cycles.clear();
+            mc.cycles.putAll(mc.cyclesSync);
+            mc.cyclesSync.clear();
+        } else if (syncType == SyncType.WORKBENCH_RECIPES) {
+            NBTTagList list = fullCompound.getTagList("recipes", 10);
+            if (list == null)
+                return;
+
+            for (int i = 0; i < list.tagCount(); i++) {
+                NBTTagCompound recipeCompound = list.getCompoundTagAt(i);
+                RecipeCarpentry recipe = RecipeCarpentry.create(recipeCompound);
+                recipe.readNBT(recipeCompound);
+                RecipeController.syncRecipes.put(recipe.id, recipe);
+            }
+
+            RecipeController.reloadGlobalRecipes(RecipeController.syncRecipes);
+            RecipeController.syncRecipes = new HashMap<Integer, RecipeCarpentry>();
+        } else if (syncType == SyncType.CARPENTRY_RECIPES) {
+            NBTTagList list = fullCompound.getTagList("recipes", 10);
+            if (list == null)
+                return;
+
+            for (int i = 0; i < list.tagCount(); i++) {
+                NBTTagCompound recipeCompound = list.getCompoundTagAt(i);
+                RecipeCarpentry recipe = RecipeCarpentry.create(recipeCompound);
+                recipe.readNBT(recipeCompound);
+                RecipeController.syncRecipes.put(recipe.id, recipe);
+            }
+
+            RecipeController.Instance.carpentryRecipes = RecipeController.syncRecipes;
+            RecipeController.syncRecipes = new HashMap<Integer, RecipeCarpentry>();
+        } else if (syncType == SyncType.ANVIL_RECIPES) {
+            NBTTagList list = fullCompound.getTagList("recipes", 10);
+            if (list == null)
+                return;
+
+            for (int i = 0; i < list.tagCount(); i++) {
+                RecipeAnvil recipe = new RecipeAnvil();
+                recipe.readNBT(list.getCompoundTagAt(i));
+                RecipeController.syncAnvilRecipes.put(recipe.id, recipe);
+            }
+
+            RecipeController.Instance.anvilRecipes = RecipeController.syncAnvilRecipes;
+            RecipeController.syncAnvilRecipes = new HashMap<Integer, RecipeAnvil>();
+        } else if (syncType == SyncType.CUSTOM_EFFECTS) {
+            NBTTagList list = fullCompound.getTagList("Data", 10);
+            CustomEffectController ce = CustomEffectController.getInstance();
+            ce.customEffectsSync.clear();
+            for (int i = 0; i < list.tagCount(); i++) {
+                CustomEffect effect = new CustomEffect();
+                effect.readFromNBT(list.getCompoundTagAt(i));
+                ClientCacheHandler.getImageData(effect.icon);
+                ce.customEffectsSync.put(effect.id, effect);
+            }
+
+            ce.getCustomEffects().clear();
+            ce.getCustomEffects().putAll(ce.customEffectsSync);
+            ce.customEffectsSync.clear();
+        } else if (syncType == SyncType.CUSTOM_ABILITY) {
+            NBTTagList list = fullCompound.getTagList("Data", 10);
+            LinkedHashMap<String, Ability> sync = new LinkedHashMap<>();
+            for (int i = 0; i < list.tagCount(); i++) {
+                NBTTagCompound nbt = list.getCompoundTagAt(i);
+                String name = nbt.getString("CustomAbilityId");
+                Ability ability = AbilityController.Instance.fromNBT(nbt);
+                if (ability != null) {
+                    ability.setName(name);
+                    sync.put(name, ability);
+                }
+            }
+            AbilityController.Instance.setCustomAbilities(sync);
+        } else if (syncType == SyncType.CHAINED_ABILITY) {
+            NBTTagList list = fullCompound.getTagList("Data", 10);
+            LinkedHashMap<String, ChainedAbility> sync = new LinkedHashMap<>();
+            for (int i = 0; i < list.tagCount(); i++) {
+                NBTTagCompound nbt = list.getCompoundTagAt(i);
+                String id = nbt.getString("ChainedAbilityId");
+                ChainedAbility chain = new ChainedAbility();
+                chain.readNBT(nbt);
+                chain.setName(id);
+                sync.put(id, chain);
+            }
+            AbilityController.Instance.setChainedAbilities(sync);
         }
 
-        ClientCacheHandler.updateClientRevision(enumSyncType, revision);
+        ClientCacheHandler.updateClientRevision(syncType, revision);
     }
 
-    public static void syncUpdate(EnumSyncType type, int cat, NBTTagCompound compound) {
-        Map<EnumSyncType, Integer> revisions = invalidateCaches(type);
+    @SideOnly(Side.CLIENT)
+    public static void clientUpdate(SyncType syncType, int category_id, int revision, NBTTagCompound compound) {
+        if (syncType == SyncType.FACTION) {
+            Faction faction = new Faction();
+            faction.readNBT(compound);
+            FactionController.getInstance().factions.put(faction.id, faction);
+        } else if (syncType == SyncType.DIALOG) {
+            DialogCategory category = DialogController.Instance.categories.get(category_id);
+            Dialog dialog = new Dialog();
+            dialog.category = category;
+            dialog.readNBT(compound);
+            DialogController.Instance.dialogs.put(dialog.id, dialog);
+            category.dialogs.put(dialog.id, dialog);
+        } else if (syncType == SyncType.QUEST) {
+            QuestCategory category = QuestController.Instance.categories.get(category_id);
+            Quest quest = new Quest();
+            quest.category = category;
+            quest.readNBT(compound);
+            QuestController.Instance.quests.put(quest.id, quest);
+            category.quests.put(quest.id, quest);
+        } else if (syncType == SyncType.QUEST_CATEGORY) {
+            QuestCategory category = new QuestCategory();
+            category.readSmallNBT(compound.getCompoundTag("CatNBT"));
+            NBTTagList list = compound.getTagList("Data", 10);
+            if (QuestController.Instance.categoriesSync.containsKey(category.id)) {
+                category = QuestController.Instance.categoriesSync.get(category.id);
+                category.readSmallNBT(compound.getCompoundTag("CatNBT"));
+            }
+            for (int i = 0; i < list.tagCount(); i++) {
+                Quest quest = new Quest();
+                quest.readNBT(list.getCompoundTagAt(i));
+                quest.category = category;
+                category.quests.put(quest.id, quest);
+            }
+            QuestController.Instance.categories.put(category.id, category);
+        } else if (syncType == SyncType.DIALOG_CATEGORY) {
+            DialogCategory category = new DialogCategory();
+            category.readSmallNBT(compound.getCompoundTag("CatNBT"));
+            NBTTagList list = compound.getTagList("Data", 10);
+            if (DialogController.Instance.categoriesSync.containsKey(category.id)) {
+                category = DialogController.Instance.categoriesSync.get(category.id);
+                category.readSmallNBT(compound.getCompoundTag("CatNBT"));
+            }
+            for (int i = 0; i < list.tagCount(); i++) {
+                Dialog dialog = new Dialog();
+                dialog.readNBT(list.getCompoundTagAt(i));
+                dialog.category = category;
+                category.dialogs.put(dialog.id, dialog);
+            }
+            DialogController.Instance.categories.put(category.id, category);
+        } else if (syncType == SyncType.MAGIC_CYCLE) {
+            MagicCycle cycle = new MagicCycle();
+            cycle.readNBT(compound);
+            MagicController.getInstance().cycles.put(cycle.id, cycle);
+        } else if (syncType == SyncType.MAGIC) {
+            Magic magic = new Magic();
+            magic.readNBT(compound);
+            MagicController.getInstance().magics.put(magic.id, magic);
+        } else if (syncType == SyncType.PLAYERDATA) {
+            ClientCacheHandler.playerData.setSyncNBT(compound);
+        } else if (syncType == SyncType.CUSTOM_EFFECTS) {
+            CustomEffect effect = new CustomEffect();
+            effect.readFromNBT(compound);
+            ClientCacheHandler.getImageData(effect.icon);
+
+            CustomEffectController.Instance.getCustomEffects().put(effect.id, effect);
+        }
+
+        ClientCacheHandler.updateClientRevision(syncType, revision);
+    }
+
+    public static void syncUpdate(SyncType type, int cat, NBTTagCompound compound) {
+        Map<SyncType, Integer> revisions = invalidateCaches(type);
         int revision = revisions.getOrDefault(type, getCurrentRevision(type));
         PacketHandler.Instance.sendToAll(new SyncPacket(
             type,
@@ -823,50 +777,41 @@ public class SyncController {
     }
 
     @SideOnly(Side.CLIENT)
-    public static void clientSyncRemove(EnumSyncType enumSyncType, int id, int revision) {
-        switch (enumSyncType) {
-            case FACTION:
-                FactionController.getInstance().factions.remove(id);
-                break;
-            case DIALOG:
-                Dialog dialog = DialogController.Instance.dialogs.remove(id);
-                if (dialog != null) {
-                    dialog.category.dialogs.remove(id);
-                }
-                break;
-            case DIALOG_CATEGORY:
-                DialogCategory dialogCategory = DialogController.Instance.categories.remove(id);
-                if (dialogCategory != null) {
-                    DialogController.Instance.dialogs.keySet().removeAll(dialogCategory.dialogs.keySet());
-                }
-                break;
-            case QUEST:
-                Quest quest = QuestController.Instance.quests.remove(id);
-                if (quest != null) {
-                    quest.category.quests.remove(id);
-                }
-                break;
-            case QUEST_CATEGORY:
-                QuestCategory questCategory = QuestController.Instance.categories.remove(id);
-                if (questCategory != null) {
-                    QuestController.Instance.quests.keySet().removeAll(questCategory.quests.keySet());
-                }
-                break;
-            case MAGIC:
-                for (MagicCycle cycle : MagicController.getInstance().cycles.values()) {
-                    cycle.associations.remove(id);
-                }
-                MagicController.getInstance().cycles.remove(id);
-                break;
-            case MAGIC_CYCLE:
-                MagicController.getInstance().cycles.remove(id);
-                break;
-            case CUSTOM_EFFECTS:
-                CustomEffectController.Instance.getCustomEffects().remove(id);
-                break;
+    public static void clientSyncRemove(SyncType syncType, int id, int revision) {
+        if (syncType == SyncType.FACTION) {
+            FactionController.getInstance().factions.remove(id);
+        } else if (syncType == SyncType.DIALOG) {
+            Dialog dialog = DialogController.Instance.dialogs.remove(id);
+            if (dialog != null) {
+                dialog.category.dialogs.remove(id);
+            }
+        } else if (syncType == SyncType.DIALOG_CATEGORY) {
+            DialogCategory dialogCategory = DialogController.Instance.categories.remove(id);
+            if (dialogCategory != null) {
+                DialogController.Instance.dialogs.keySet().removeAll(dialogCategory.dialogs.keySet());
+            }
+        } else if (syncType == SyncType.QUEST) {
+            Quest quest = QuestController.Instance.quests.remove(id);
+            if (quest != null) {
+                quest.category.quests.remove(id);
+            }
+        } else if (syncType == SyncType.QUEST_CATEGORY) {
+            QuestCategory questCategory = QuestController.Instance.categories.remove(id);
+            if (questCategory != null) {
+                QuestController.Instance.quests.keySet().removeAll(questCategory.quests.keySet());
+            }
+        } else if (syncType == SyncType.MAGIC) {
+            for (MagicCycle cycle : MagicController.getInstance().cycles.values()) {
+                cycle.associations.remove(id);
+            }
+            MagicController.getInstance().cycles.remove(id);
+        } else if (syncType == SyncType.MAGIC_CYCLE) {
+            MagicController.getInstance().cycles.remove(id);
+        } else if (syncType == SyncType.CUSTOM_EFFECTS) {
+            CustomEffectController.Instance.getCustomEffects().remove(id);
         }
 
-        ClientCacheHandler.updateClientRevision(enumSyncType, revision);
+        ClientCacheHandler.updateClientRevision(syncType, revision);
     }
 
     public static void syncEffects(EntityPlayerMP playerMP) {
@@ -912,11 +857,11 @@ public class SyncController {
         }
     }
 
-    private static void registerCache(EnumSyncType type, Supplier<NBTTagCompound> supplier) {
-        cacheEntries.put(type, new SyncCacheEntry(type, supplier));
+    private static void registerCache(SyncType type, Supplier<NBTTagCompound> supplier) {
+        cacheEntries.put(type, new SyncCacheEntry(supplier));
     }
 
-    private static CachedSyncPayload rebuildNow(EnumSyncType type) {
+    private static CachedSyncPayload rebuildNow(SyncType type) {
         SyncCacheEntry entry = cacheEntries.get(type);
         if (entry == null) {
             return null;
@@ -925,10 +870,10 @@ public class SyncController {
         return entry.getPayload(type);
     }
 
-    public static Map<EnumSyncType, Integer> invalidateCaches(EnumSyncType type) {
-        EnumSet<EnumSyncType> targets = getInvalidationTargets(type);
-        EnumMap<EnumSyncType, Integer> revisions = new EnumMap<>(EnumSyncType.class);
-        for (EnumSyncType target : targets) {
+    public static Map<SyncType, Integer> invalidateCaches(SyncType type) {
+        Set<SyncType> targets = getInvalidationTargets(type);
+        Map<SyncType, Integer> revisions = new LinkedHashMap<>();
+        for (SyncType target : targets) {
             SyncCacheEntry entry = cacheEntries.get(target);
             if (entry != null) {
                 int newRevision = entry.invalidate();
@@ -938,38 +883,56 @@ public class SyncController {
         return revisions;
     }
 
-    private static EnumSet<EnumSyncType> getInvalidationTargets(EnumSyncType type) {
-        switch (type) {
-            case DIALOG:
-            case DIALOG_CATEGORY:
-                return EnumSet.of(EnumSyncType.DIALOG_CATEGORY);
-            case QUEST:
-            case QUEST_CATEGORY:
-                return EnumSet.of(EnumSyncType.QUEST_CATEGORY);
-            case FACTION:
-                return EnumSet.of(EnumSyncType.FACTION);
-            case MAGIC:
-                return EnumSet.of(EnumSyncType.MAGIC);
-            case MAGIC_CYCLE:
-                return EnumSet.of(EnumSyncType.MAGIC_CYCLE);
-            case WORKBENCH_RECIPES:
-                return EnumSet.of(EnumSyncType.WORKBENCH_RECIPES);
-            case CARPENTRY_RECIPES:
-                return EnumSet.of(EnumSyncType.CARPENTRY_RECIPES);
-            case ANVIL_RECIPES:
-                return EnumSet.of(EnumSyncType.ANVIL_RECIPES);
-            case CUSTOM_EFFECTS:
-                return EnumSet.of(EnumSyncType.CUSTOM_EFFECTS);
-            case CUSTOM_ABILITY:
-                return EnumSet.of(EnumSyncType.CUSTOM_ABILITY);
-            case CHAINED_ABILITY:
-                return EnumSet.of(EnumSyncType.CHAINED_ABILITY);
-            default:
-                return EnumSet.noneOf(EnumSyncType.class);
+    private static Set<SyncType> getInvalidationTargets(SyncType type) {
+        if (type == SyncType.DIALOG || type == SyncType.DIALOG_CATEGORY) {
+            Set<SyncType> set = new HashSet<>();
+            set.add(SyncType.DIALOG_CATEGORY);
+            return set;
+        } else if (type == SyncType.QUEST || type == SyncType.QUEST_CATEGORY) {
+            Set<SyncType> set = new HashSet<>();
+            set.add(SyncType.QUEST_CATEGORY);
+            return set;
+        } else if (type == SyncType.FACTION) {
+            Set<SyncType> set = new HashSet<>();
+            set.add(SyncType.FACTION);
+            return set;
+        } else if (type == SyncType.MAGIC) {
+            Set<SyncType> set = new HashSet<>();
+            set.add(SyncType.MAGIC);
+            return set;
+        } else if (type == SyncType.MAGIC_CYCLE) {
+            Set<SyncType> set = new HashSet<>();
+            set.add(SyncType.MAGIC_CYCLE);
+            return set;
+        } else if (type == SyncType.WORKBENCH_RECIPES) {
+            Set<SyncType> set = new HashSet<>();
+            set.add(SyncType.WORKBENCH_RECIPES);
+            return set;
+        } else if (type == SyncType.CARPENTRY_RECIPES) {
+            Set<SyncType> set = new HashSet<>();
+            set.add(SyncType.CARPENTRY_RECIPES);
+            return set;
+        } else if (type == SyncType.ANVIL_RECIPES) {
+            Set<SyncType> set = new HashSet<>();
+            set.add(SyncType.ANVIL_RECIPES);
+            return set;
+        } else if (type == SyncType.CUSTOM_EFFECTS) {
+            Set<SyncType> set = new HashSet<>();
+            set.add(SyncType.CUSTOM_EFFECTS);
+            return set;
+        } else if (type == SyncType.CUSTOM_ABILITY) {
+            Set<SyncType> set = new HashSet<>();
+            set.add(SyncType.CUSTOM_ABILITY);
+            return set;
+        } else if (type == SyncType.CHAINED_ABILITY) {
+            Set<SyncType> set = new HashSet<>();
+            set.add(SyncType.CHAINED_ABILITY);
+            return set;
         }
+        return Collections.emptySet();
     }
 
-    private static void updateAllPlayerRevisions(EnumSyncType type, int revision) {
+    private static void updateAllPlayerRevisions(SyncType type, int revision) {
         if (revision < 0) {
             return;
         }
@@ -978,12 +941,12 @@ public class SyncController {
         }
     }
 
-    private static void updateAllPlayerRevisions(Map<EnumSyncType, Integer> revisions) {
+    private static void updateAllPlayerRevisions(Map<SyncType, Integer> revisions) {
         if (revisions.isEmpty()) {
             return;
         }
         for (PlayerSyncState state : playerSyncState.values()) {
-            for (Map.Entry<EnumSyncType, Integer> entry : revisions.entrySet()) {
+            for (Map.Entry<SyncType, Integer> entry : revisions.entrySet()) {
                 state.updateRevision(entry.getKey(), entry.getValue());
             }
         }
@@ -1019,11 +982,11 @@ public class SyncController {
         private int revision = 0;
         private boolean dirty = true;
 
-        private SyncCacheEntry(EnumSyncType type, Supplier<NBTTagCompound> supplier) {
+        private SyncCacheEntry(Supplier<NBTTagCompound> supplier) {
             this.supplier = supplier;
         }
 
-        private synchronized CachedSyncPayload getPayload(EnumSyncType requestedType) {
+        private synchronized CachedSyncPayload getPayload(SyncType requestedType) {
             if (!dirty && payload != null) {
                 return payload;
             }
@@ -1089,21 +1052,21 @@ public class SyncController {
     }
 
     private static final class PlayerSyncState {
-        private final EnumMap<EnumSyncType, Integer> revisions = new EnumMap<>(EnumSyncType.class);
+        private final Map<SyncType, Integer> revisions = new HashMap<>();
 
         private PlayerSyncState(UUID ignored) {
         }
 
-        private synchronized int getRevision(EnumSyncType type) {
+        private synchronized int getRevision(SyncType type) {
             Integer value = revisions.get(type);
             return value == null ? -1 : value;
         }
 
-        private synchronized void updateRevision(EnumSyncType type, int revision) {
+        private synchronized void updateRevision(SyncType type, int revision) {
             revisions.put(type, revision);
         }
 
-        private synchronized void applyHandshake(Map<EnumSyncType, Integer> incoming) {
+        private synchronized void applyHandshake(Map<SyncType, Integer> incoming) {
             if (incoming == null || incoming.isEmpty()) {
                 return;
             }

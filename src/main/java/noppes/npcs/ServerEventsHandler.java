@@ -10,7 +10,7 @@ import kamkeel.npcs.entity.EntityEnergyDome;
 import kamkeel.npcs.network.PacketHandler;
 import kamkeel.npcs.network.enums.EnumSoundOperation;
 import kamkeel.npcs.network.enums.EnumSyncAction;
-import kamkeel.npcs.network.enums.EnumSyncType;
+import kamkeel.npcs.network.enums.SyncType;
 import kamkeel.npcs.network.packets.data.ClonerPacket;
 import kamkeel.npcs.network.packets.data.MarkDataPacket;
 import kamkeel.npcs.network.packets.data.SoundManagementPacket;
@@ -255,19 +255,19 @@ public class ServerEventsHandler {
 
         if (block == Blocks.crafting_table && event.action == Action.RIGHT_CLICK_BLOCK && !player.worldObj.isRemote) {
             PacketHandler.Instance.sendToPlayer(new SyncPacket(
-                EnumSyncType.WORKBENCH_RECIPES,
+                SyncType.WORKBENCH_RECIPES,
                 EnumSyncAction.RELOAD,
                 -1,
-                SyncController.getCurrentRevision(EnumSyncType.WORKBENCH_RECIPES),
+                SyncController.getCurrentRevision(SyncType.WORKBENCH_RECIPES),
                 SyncController.workbenchNBT()
             ), (EntityPlayerMP) player);
         }
         if (block == CustomItems.carpentyBench && event.action == Action.RIGHT_CLICK_BLOCK && !player.worldObj.isRemote) {
             PacketHandler.Instance.sendToPlayer(new SyncPacket(
-                EnumSyncType.CARPENTRY_RECIPES,
+                SyncType.CARPENTRY_RECIPES,
                 EnumSyncAction.RELOAD,
                 -1,
-                SyncController.getCurrentRevision(EnumSyncType.CARPENTRY_RECIPES),
+                SyncController.getCurrentRevision(SyncType.CARPENTRY_RECIPES),
                 SyncController.carpentryNBT()
             ), (EntityPlayerMP) player);
         }
