@@ -17,26 +17,14 @@ public final class SyncRegistry {
     private static final LinkedHashMap<SyncType, SyncHandler> handlers = new LinkedHashMap<>();
 
     private static SyncType[] loginTypesCache = null;
-    private static boolean frozen = false;
 
-    private SyncRegistry() {
-    }
+    private SyncRegistry() {}
 
     public static void register(SyncType type, SyncHandler handler) {
-        if (type == null) {
-            throw new IllegalArgumentException("SyncType must not be null");
-        }
-        if (handler == null) {
-            throw new IllegalArgumentException("SyncHandler must not be null for " + type);
-        }
-        if (frozen) {
-            throw new IllegalStateException(
-                "SyncRegistry is frozen; cannot register handler for " + type);
-        }
-        if (handlers.containsKey(type)) {
-            throw new IllegalStateException(
-                "SyncHandler already registered for " + type);
-        }
+        if (type == null) throw new IllegalArgumentException("SyncType must not be null");
+        if (handler == null) throw new IllegalArgumentException("SyncHandler must not be null for " + type);
+        if (handlers.containsKey(type)) throw new IllegalStateException("SyncHandler already registered for " + type);
+        
         handlers.put(type, handler);
         loginTypesCache = null;
     }
@@ -48,11 +36,10 @@ public final class SyncRegistry {
     public static SyncType[] getLoginTypes() {
         if (loginTypesCache == null) {
             List<SyncType> list = new ArrayList<>();
-            for (Map.Entry<SyncType, SyncHandler> e : handlers.entrySet()) {
-                if (e.getValue().isCachedType()) {
+            for (Map.Entry<SyncType, SyncHandler> e : handlers.entrySet()) 
+                if (e.getValue().isCachedType()) 
                     list.add(e.getKey());
-                }
-            }
+            
             loginTypesCache = list.toArray(new SyncType[0]);
         }
         return loginTypesCache;
@@ -69,24 +56,8 @@ public final class SyncRegistry {
     public static void clear() {
         handlers.clear();
         loginTypesCache = null;
-        frozen = false;
     }
-
-    public static void freeze() {
-        frozen = true;
-    }
-
-    public static boolean isFrozen() {
-        return frozen;
-    }
-
-    public static void validateRegistrations() {
-        for (SyncType type : SyncType.values()) {
-            if (!handlers.containsKey(type)) {
-                LogWriter.info("[SyncRegistry] No SyncHandler registered for " + type);
-            }
-        }
-    }
+    
 
     public static boolean isRegistered(SyncType type) {
         return handlers.containsKey(type);

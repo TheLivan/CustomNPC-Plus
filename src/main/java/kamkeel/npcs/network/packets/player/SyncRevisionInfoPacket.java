@@ -80,6 +80,6 @@ public class SyncRevisionInfoPacket extends AbstractPacket {
             }
         }
 
-        SyncController.handleClientRevisionReport((EntityPlayerMP) player, incomingServerKey, incomingPreviousKey, incomingRevisions);
+        SyncController.completeLoginRevisionHandshake((EntityPlayerMP) player, incomingServerKey, incomingPreviousKey, incomingRevisions);
     }
 }

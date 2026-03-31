@@ -4,6 +4,8 @@ import cpw.mods.fml.relauncher.Side;
 import cpw.mods.fml.relauncher.SideOnly;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
+import kamkeel.npcdbc.network.DBCPacketHandler;
+import kamkeel.npcdbc.network.packets.get.DBCInfoSyncPacket;
 import kamkeel.npcs.addon.DBCAddon;
 import kamkeel.npcs.controllers.sync.SyncHandler;
 import kamkeel.npcs.controllers.sync.SyncRegistry;
@@ -20,6 +22,7 @@ import kamkeel.npcs.util.ByteBufUtils;
 import net.minecraft.entity.player.EntityPlayerMP;
 import net.minecraft.nbt.NBTTagCompound;
 import net.minecraft.server.MinecraftServer;
+import noppes.npcs.LogWriter;
 import noppes.npcs.client.ClientCacheHandler;
 import noppes.npcs.controllers.data.PlayerData;
 
@@ -59,17 +62,14 @@ import java.util.function.Supplier;
  */
 public class SyncController {
 
-    public static boolean DEBUG_SYNC_LOGGING = false;
-
+    /** Cached serialized reload payloads and revision state for each global sync family. */
     private static final Map<SyncType, SyncCacheEntry> cacheEntries = new LinkedHashMap<>();
+
+    /** Last known synced revision map for each connected player. */
     private static final ConcurrentHashMap<UUID, PlayerSyncState> playerSyncState = new ConcurrentHashMap<>();
 
-
-    private static void debug(String message, Object... args) {
-        if (DEBUG_SYNC_LOGGING) {
-            System.out.println("[SyncController] " + String.format(message, args));
-        }
-    }
+    /** Stable identity token for the current dedicated-server process, used by the revision handshake. */
+    private static final String SERVER_IDENTITY_KEY = UUID.randomUUID().toString();
 
     // ═══════════════════════════════════════════════════════════════════════
     // Lifecycle — handler registration and cache initialization
@@ -112,92 +112,16 @@ public class SyncController {
             if (handler != null)
                 registerCache(type, handler::serializeAll);
         }
-
-        SyncRegistry.validateRegistrations();
-        SyncRegistry.freeze();
     }
+
 
     // ═══════════════════════════════════════════════════════════════════════
-    // Login sync and revision handshake
+    // Other Login syncers
     // ═══════════════════════════════════════════════════════════════════════
-
-    public static void syncPlayer(EntityPlayerMP player) {
-        SyncController.syncPlayer(player, true);
-    }
-
-    private static void syncPlayer(EntityPlayerMP player, boolean includePostPackets) {
-        PlayerSyncState state = playerSyncState.computeIfAbsent(player.getUniqueID(), PlayerSyncState::new);
-
-        // Registry-driven login iteration: iterate only cached types
-        for (SyncType type : SyncRegistry.getLoginTypes()) {
-            SyncCacheEntry entry = cacheEntries.get(type);
-            if (entry == null) {
-                continue;
-            }
-
-            int currentRevision = entry.getRevisionValue();
-            int lastRevision = state.getRevision(type);
-            if (lastRevision == currentRevision) 
-                continue;
-            
-            CachedSyncPayload payload = entry.getPayload(type);
-            if (payload == null) 
-                continue;
-
-            if (lastRevision != payload.getRevision()) {
-                debug("Sending %s data to %s", type, player.getCommandSenderName());
-                PacketHandler.Instance.sendToPlayer(new SyncPacket(type, payload), player);
-                state.updateRevision(type, payload.getRevision());
-            }
-        }
-
-        if (includePostPackets) {
-            sendPostLoginPackets(player);
-        }
-    }
 
     public static void beginLogin(EntityPlayerMP player) {
         playerSyncState.computeIfAbsent(player.getUniqueID(), PlayerSyncState::new);
-        PacketHandler.Instance.sendToPlayer(
-            new LoginPacket(getServerCacheKey(), getServerRevisionSnapshot()),
-            player
-        );
-    }
-
-    public static void handleClientRevisionReport(
-        EntityPlayerMP player,
-        String serverKey,
-        String previousServerKey,
-        Map<SyncType, Integer> clientRevisions
-    ) {
-        String currentServerKey = getServerCacheKey();
-        PlayerSyncState state = playerSyncState.computeIfAbsent(player.getUniqueID(), PlayerSyncState::new);
-
-        if (!currentServerKey.equals(serverKey)) {
-            state.reset();
-            syncPlayer(player);
-            return;
-        }
-
-        if (!currentServerKey.isEmpty()) {
-            if (previousServerKey == null || !currentServerKey.equals(previousServerKey)) {
-                state.reset();
-                syncPlayer(player);
-                return;
-            }
-        }
-
-        if (clientRevisions == null || clientRevisions.isEmpty()) {
-            debug(
-                "Client %s reported no cached revisions; forcing full sync",
-                player.getCommandSenderName()
-            );
-            state.reset();
-        } else {
-            state.applyHandshake(clientRevisions);
-        }
-
-        syncPlayer(player);
+        PacketHandler.Instance.sendToPlayer(new LoginPacket(getServerCacheKey(), getServerRevisionSnapshot()), player);
     }
 
     private static void sendPostLoginPackets(EntityPlayerMP player) {
@@ -210,45 +134,72 @@ public class SyncController {
         // Overlays are not part of getSyncNBTFull(), and packets sent during
         // PlayerLoggedInEvent can arrive before the client entity exists.
         PlayerData data = PlayerData.get(player);
-        if (data != null) {
-            data.skinOverlays.updateClient();
-        }
-    }
-
-    private static Map<SyncType, Integer> getServerRevisionSnapshot() {
-        // Registry-driven: iterate login types from registry
-        Map<SyncType, Integer> snapshot = new LinkedHashMap<>();
-        for (SyncType type : SyncRegistry.getLoginTypes()) {
-            SyncCacheEntry entry = cacheEntries.get(type);
-            if (entry != null) 
-                snapshot.put(type, entry.getRevisionValue());
-            
-        }
-        return snapshot;
-    }
-
-    private static final String SERVER_IDENTITY_KEY = UUID.randomUUID().toString();
-
-    private static String getServerCacheKey() {
-        MinecraftServer server = MinecraftServer.getServer();
-        if (server == null) {
-            return "";
-        }
-
-        if (!server.isDedicatedServer()) {
-            return "";
-        }
-
-        return SERVER_IDENTITY_KEY;
-    }
-
-    public static int getCurrentRevision(SyncType type) {
-        SyncCacheEntry entry = cacheEntries.get(type);
-        return entry == null ? -1 : entry.getRevisionValue();
+        if (data != null) data.skinOverlays.updateClient();
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // Generic sync dispatch — registry-driven, no family-specific logic
+    // MAIN PIPELINE — completion of login handshake and full catalog sync
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /**
+     * Runs the cached-family sync pass for one player using the currently tracked
+     * revision state. Used after the login handshake and by server-side callers
+     * that need to refresh a player's global cached sync families.
+     */
+    public static void syncPlayer(EntityPlayerMP player) {
+        PlayerSyncState state = playerSyncState.computeIfAbsent(player.getUniqueID(), PlayerSyncState::new);
+
+        // Registry-driven login iteration: iterate only cached types
+        for (SyncType type : SyncRegistry.getLoginTypes()) {
+            SyncCacheEntry entry = cacheEntries.get(type);
+            if (entry == null) continue;
+
+            int currentRevision = entry.getRevisionValue();
+            int lastRevision = state.getRevision(type);
+            if (lastRevision == currentRevision) continue;
+            
+            CachedSyncPayload payload = entry.getPayload(type);
+            if (payload == null) continue;
+
+            if (lastRevision != payload.getRevision()) {
+                PacketHandler.Instance.sendToPlayer(new SyncPacket(type, payload), player);
+                state.updateRevision(type, payload.getRevision());
+            }
+        }
+
+        sendPostLoginPackets(player);
+    }
+
+    /**
+     * Completes the server-side revision handshake that follows {@link LoginPacket}.
+     *
+     * The client reports which cached revisions it believes are still valid for the
+     * current server identity. If the reported server identity is stale or missing,
+     * we reset the stored state and force a full cached resync. Otherwise we seed the
+     * player's tracked revisions from the client report and only send outdated families.
+     */
+    public static void completeLoginRevisionHandshake(EntityPlayerMP player, String serverKey, String previousServerKey,
+                                                      Map<SyncType, Integer> clientRevisions) {
+        String currentServerKey = getServerCacheKey();
+        PlayerSyncState state = playerSyncState.computeIfAbsent(player.getUniqueID(), PlayerSyncState::new);
+
+        boolean serverIdentityMismatch = !currentServerKey.equals(serverKey);
+        boolean previousServerMismatch = !currentServerKey.isEmpty() && (previousServerKey == null || !currentServerKey.equals(
+                previousServerKey));
+        boolean canReuseClientRevisions = clientRevisions != null && !clientRevisions.isEmpty();
+
+        // Any server identity mismatch means the client's cached revision map is unsafe to reuse.
+        if (serverIdentityMismatch || previousServerMismatch || !canReuseClientRevisions)
+            state.reset();
+        else // The client and server agree on identity, so seed the stored state from the report.
+            state.applyHandshake(clientRevisions);
+
+        syncPlayer(player);
+    }
+
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Generic dispatcher — called from outside SyncController
     // ═══════════════════════════════════════════════════════════════════════
 
     /**
@@ -256,59 +207,71 @@ public class SyncController {
      * and sends to all connected players.
      */
     public static void syncAll(SyncType type) {
-        CachedSyncPayload payload = rebuildNow(type);
-        if (payload == null) {
-            return;
-        }
+        CachedSyncPayload payload = rebuildCache(type);
+        if (payload == null) return;
+
         PacketHandler.Instance.sendToAll(new SyncPacket(type, payload));
         updateAllPlayerRevisions(type, payload.getRevision());
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // UPDATE and REMOVE dispatch — generic, registry-driven
+    // Server-side dispatchers — registry-driven
     // ═══════════════════════════════════════════════════════════════════════
 
     public static void syncRemove(SyncType syncType, int id) {
         Map<SyncType, Integer> revisions = invalidateCaches(syncType);
-        int revision = revisions.getOrDefault(syncType, getCurrentRevision(syncType));
+        int revision = getRequestedInvalidationRevision(syncType, revisions);
         PacketHandler.Instance.sendToAll(new SyncPacket(syncType, EnumSyncAction.REMOVE, id, revision, new NBTTagCompound()));
         updateAllPlayerRevisions(revisions);
     }
 
     public static void syncUpdate(SyncType type, int cat, NBTTagCompound compound) {
         Map<SyncType, Integer> revisions = invalidateCaches(type);
-        int revision = revisions.getOrDefault(type, getCurrentRevision(type));
+        int revision = getRequestedInvalidationRevision(type, revisions);
         PacketHandler.Instance.sendToAll(new SyncPacket(type, EnumSyncAction.UPDATE, cat, revision, compound));
         updateAllPlayerRevisions(revisions);
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // Client-side dispatch — registry-driven handler delegation
+    // Client-side handlers — registry-driven handler delegation
     // ═══════════════════════════════════════════════════════════════════════
 
     @SideOnly(Side.CLIENT)
-    public static void clientSync(SyncType syncType, int revision, NBTTagCompound fullCompound) {
+    public static void clientHandleAll(SyncType syncType, int revision, NBTTagCompound fullCompound) {
         SyncHandler handler = SyncRegistry.getHandler(syncType);
-        if (handler != null) 
+        if (handler == null) return;
+        try {
             handler.clientHandleReload(fullCompound);
-        
+        } catch (Exception e) {
+            LogWriter.error("[SyncController] Failed to handle RELOAD for sync type " + syncType, e);
+        }
         ClientCacheHandler.updateClientRevision(syncType, revision);
+
     }
 
     @SideOnly(Side.CLIENT)
-    public static void clientUpdate(SyncType syncType, int category_id, int revision, NBTTagCompound compound) {
+    public static void clientHandleUpdate(SyncType syncType, int category_id, int revision, NBTTagCompound compound) {
         SyncHandler handler = SyncRegistry.getHandler(syncType);
-        if (handler != null) 
+        if (handler == null) return;
+        try {
             handler.clientHandleUpdate(compound, category_id);
+        } catch (Exception e) {
+            LogWriter.error("[SyncController] Failed to handle UPDATE for sync type " + syncType, e);
+        }
         
         ClientCacheHandler.updateClientRevision(syncType, revision);
     }
 
     @SideOnly(Side.CLIENT)
-    public static void clientSyncRemove(SyncType syncType, int id, int revision) {
+    public static void clientHandleRemove(SyncType syncType, int id, int revision, NBTTagCompound compound) {
         SyncHandler handler = SyncRegistry.getHandler(syncType);
-        if (handler != null) 
+        if (handler == null) return;
+        try {
             handler.clientHandleRemove(id);
+            handler.clientHandleRemove(compound);
+        } catch (Exception e) {
+            LogWriter.error("[SyncController] Failed to handle REMOVE for sync type " + syncType, e);
+        }
         
         ClientCacheHandler.updateClientRevision(syncType, revision);
     }
@@ -321,10 +284,9 @@ public class SyncController {
         cacheEntries.put(type, new SyncCacheEntry(supplier));
     }
 
-    private static CachedSyncPayload rebuildNow(SyncType type) {
+    private static CachedSyncPayload rebuildCache(SyncType type) {
         SyncCacheEntry entry = cacheEntries.get(type);
-        if (entry == null) 
-            return null;
+        if (entry == null) return null;
         
         entry.invalidate();
         return entry.getPayload(type);
@@ -334,7 +296,7 @@ public class SyncController {
      * Registry-driven invalidation: delegates to handler-owned
      * invalidation targets via {@link SyncRegistry#getInvalidationTargets}.
      */
-    public static Map<SyncType, Integer> invalidateCaches(SyncType type) {
+    private static Map<SyncType, Integer> invalidateCaches(SyncType type) {
         Set<SyncType> targets = SyncRegistry.getInvalidationTargets(type);
         Map<SyncType, Integer> revisions = new LinkedHashMap<>();
         for (SyncType target : targets) {
@@ -347,25 +309,50 @@ public class SyncController {
         return revisions;
     }
 
+    private static int getRequestedInvalidationRevision(SyncType type, Map<SyncType, Integer> revisions) {
+        Integer revision = revisions.get(type);
+        return revision != null ? revision : getCurrentServerRevision(type);
+    }
+
+    public static int getCurrentServerRevision(SyncType type) {
+        SyncCacheEntry entry = cacheEntries.get(type);
+        return entry == null ? -1 : entry.getRevisionValue();
+    }
+
+    private static Map<SyncType, Integer> getServerRevisionSnapshot() {
+        // Registry-driven: iterate login types from registry
+        Map<SyncType, Integer> snapshot = new LinkedHashMap<>();
+        for (SyncType type : SyncRegistry.getLoginTypes()) {
+            SyncCacheEntry entry = cacheEntries.get(type);
+            if (entry != null)
+                snapshot.put(type, entry.getRevisionValue());
+        }
+        return snapshot;
+    }
+
     private static void updateAllPlayerRevisions(SyncType type, int revision) {
-        if (revision < 0) {
-            return;
-        }
-        for (PlayerSyncState state : playerSyncState.values()) {
+        if (revision < 0) return;
+
+        for (PlayerSyncState state : playerSyncState.values()) 
             state.updateRevision(type, revision);
-        }
     }
 
     private static void updateAllPlayerRevisions(Map<SyncType, Integer> revisions) {
-        if (revisions.isEmpty()) {
-            return;
-        }
+        if (revisions.isEmpty()) return;
+
         for (PlayerSyncState state : playerSyncState.values()) {
-            for (Map.Entry<SyncType, Integer> entry : revisions.entrySet()) {
+            for (Map.Entry<SyncType, Integer> entry : revisions.entrySet()) 
                 state.updateRevision(entry.getKey(), entry.getValue());
-            }
         }
     }
+
+    private static String getServerCacheKey() {
+        MinecraftServer server = MinecraftServer.getServer();
+        if (server == null || !server.isDedicatedServer()) return "";
+
+        return SERVER_IDENTITY_KEY;
+    }
+
 
     // ═══════════════════════════════════════════════════════════════════════
     // Inner classes — cache payload and player revision state
@@ -406,15 +393,14 @@ public class SyncController {
         }
 
         private synchronized CachedSyncPayload getPayload(SyncType requestedType) {
-            if (!dirty && payload != null) {
-                return payload;
-            }
+            if (!dirty && payload != null) return payload;
 
             int payloadRevision = revision;
-            NBTTagCompound data = supplier.get();
             ByteBuf buffer = Unpooled.buffer();
             byte[] bytes;
             try {
+                NBTTagCompound data = supplier.get();
+                
                 buffer.writeInt(requestedType.ordinal());
                 buffer.writeInt(EnumSyncAction.RELOAD.ordinal());
                 buffer.writeInt(-1);
@@ -423,8 +409,9 @@ public class SyncController {
 
                 bytes = new byte[buffer.readableBytes()];
                 buffer.readBytes(bytes);
-            } catch (IOException e) {
-                throw new RuntimeException("Failed to serialize sync payload for " + requestedType, e);
+            } catch (Exception e) {
+                LogWriter.error("Failed to serialize sync payload for " + requestedType, e);
+                return null;
             } finally {
                 buffer.release();
             }
@@ -433,6 +420,23 @@ public class SyncController {
             payload = new CachedSyncPayload(payloadRevision, bytes, chunks);
             dirty = false;
             return payload;
+        }
+
+        private static byte[][] splitIntoChunks(byte[] payload) {
+            int totalSize = payload.length;
+            int chunkCount = (totalSize + LargeAbstractPacket.CHUNK_SIZE - 1) / LargeAbstractPacket.CHUNK_SIZE;
+            if (chunkCount <= 0)
+                chunkCount = 1;
+
+            byte[][] chunks = new byte[chunkCount][];
+            for (int i = 0; i < chunkCount; i++) {
+                int offset = i * LargeAbstractPacket.CHUNK_SIZE;
+                int length = Math.min(LargeAbstractPacket.CHUNK_SIZE, totalSize - offset);
+                byte[] chunk = new byte[length];
+                System.arraycopy(payload, offset, chunk, 0, length);
+                chunks[i] = chunk;
+            }
+            return chunks;
         }
 
         private synchronized int invalidate() {
@@ -450,23 +454,6 @@ public class SyncController {
             dirty = true;
             payload = null;
             revision = 0;
-        }
-
-        private static byte[][] splitIntoChunks(byte[] payload) {
-            int totalSize = payload.length;
-            int chunkCount = (totalSize + LargeAbstractPacket.CHUNK_SIZE - 1) / LargeAbstractPacket.CHUNK_SIZE;
-            if (chunkCount <= 0) {
-                chunkCount = 1;
-            }
-            byte[][] chunks = new byte[chunkCount][];
-            for (int i = 0; i < chunkCount; i++) {
-                int offset = i * LargeAbstractPacket.CHUNK_SIZE;
-                int length = Math.min(LargeAbstractPacket.CHUNK_SIZE, totalSize - offset);
-                byte[] chunk = new byte[length];
-                System.arraycopy(payload, offset, chunk, 0, length);
-                chunks[i] = chunk;
-            }
-            return chunks;
         }
     }
 
@@ -486,15 +473,12 @@ public class SyncController {
         }
 
         private synchronized void applyHandshake(Map<SyncType, Integer> incoming) {
-            if (incoming == null || incoming.isEmpty()) {
-                return;
-            }
+            if (incoming == null || incoming.isEmpty()) return;
             revisions.putAll(incoming);
         }
 
         private synchronized void reset() {
             revisions.clear();
         }
-
     }
 }

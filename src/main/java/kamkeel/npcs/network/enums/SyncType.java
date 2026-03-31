@@ -26,7 +26,6 @@ public final class SyncType {
     // ──────────────────── Registry ────────────────────
     private static final Map<String, SyncType> REGISTRY = new LinkedHashMap<>();
     private static int nextOrdinal = 0;
-    private static boolean frozen = false;
 
     // ──────────────────── CNPC+ families ────────────────────
     public static final SyncType FACTION          = register("cnpc:faction");
@@ -69,7 +68,7 @@ public final class SyncType {
     public int ordinal() {
         return ordinal;
     }
-
+    
     // ──────────────────── Registration ────────────────────
 
     /**
@@ -82,18 +81,10 @@ public final class SyncType {
      * @throws IllegalStateException    if the registry has been frozen
      */
     public static SyncType register(String id) {
-        if (id == null || id.isEmpty()) {
-            throw new IllegalArgumentException("SyncType id must not be null or empty");
-        }
-        if (!id.contains(":")) {
-            throw new IllegalArgumentException("SyncType id must be namespaced (modid:path): " + id);
-        }
-        if (frozen) {
-            throw new IllegalStateException("SyncType registry is frozen; cannot register: " + id);
-        }
-        if (REGISTRY.containsKey(id)) {
-            throw new IllegalStateException("Duplicate SyncType registration: " + id);
-        }
+        if (id == null || id.isEmpty()) throw new IllegalArgumentException("SyncType id must not be null or empty");
+        if (!id.contains(":")) throw new IllegalArgumentException("SyncType id must be namespaced (modid:path): " + id);
+        if (REGISTRY.containsKey(id)) throw new IllegalStateException("Duplicate SyncType registration: " + id);
+        
         SyncType type = new SyncType(id, nextOrdinal++);
         REGISTRY.put(id, type);
         return type;
@@ -115,14 +106,11 @@ public final class SyncType {
      * @return the registered type, or {@code null} if ordinal is out of range
      */
     public static SyncType byOrdinal(int ordinal) {
-        if (ordinal < 0) {
-            return null;
-        }
-        for (SyncType type : REGISTRY.values()) {
-            if (type.ordinal == ordinal) {
-                return type;
-            }
-        }
+        if (ordinal < 0) return null;
+        
+        for (SyncType type : REGISTRY.values()) 
+            if (type.ordinal == ordinal) return type;
+        
         return null;
     }
 
@@ -131,30 +119,6 @@ public final class SyncType {
      */
     public static Collection<SyncType> values() {
         return Collections.unmodifiableCollection(REGISTRY.values());
-    }
-
-    /**
-     * Freeze the registry. After freezing, no new types can be registered.
-     * Should be called after all mods have had a chance to register types.
-     */
-    public static void freeze() {
-        frozen = true;
-    }
-
-    /**
-     * Whether the registry has been frozen.
-     */
-    public static boolean isFrozen() {
-        return frozen;
-    }
-
-    /**
-     * Unfreeze the registry. Called during world reload to allow addon
-     * re-registration. Does NOT clear existing registrations — built-in
-     * constants stay stable.
-     */
-    public static void unfreeze() {
-        frozen = false;
     }
 
     // ──────────────────── Object overrides ────────────────────

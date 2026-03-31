@@ -152,13 +152,13 @@ public final class SyncPacket extends LargeAbstractPacket {
     ) {
         switch (enumSyncAction) {
             case RELOAD:
-                SyncController.clientSync(syncType, incomingRevision, data);
+                SyncController.clientHandleAll(syncType, incomingRevision, data);
                 break;
             case UPDATE:
-                SyncController.clientUpdate(syncType, id, incomingRevision, data);
+                SyncController.clientHandleUpdate(syncType, id, incomingRevision, data);
                 break;
             case REMOVE:
-                SyncController.clientSyncRemove(syncType, id, incomingRevision);
+                SyncController.clientHandleRemove(syncType, id, incomingRevision, data);
                 break;
         }
     }
