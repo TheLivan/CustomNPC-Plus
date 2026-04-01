@@ -4,8 +4,6 @@ import cpw.mods.fml.relauncher.Side;
 import cpw.mods.fml.relauncher.SideOnly;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
-import kamkeel.npcdbc.network.DBCPacketHandler;
-import kamkeel.npcdbc.network.packets.get.DBCInfoSyncPacket;
 import kamkeel.npcs.addon.DBCAddon;
 import kamkeel.npcs.controllers.sync.SyncHandler;
 import kamkeel.npcs.controllers.sync.SyncRegistry;
@@ -26,7 +24,6 @@ import noppes.npcs.LogWriter;
 import noppes.npcs.client.ClientCacheHandler;
 import noppes.npcs.controllers.data.PlayerData;
 
-import java.io.IOException;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -146,7 +143,7 @@ public class SyncController {
      * revision state. Used after the login handshake and by server-side callers
      * that need to refresh a player's global cached sync families.
      */
-    public static void syncPlayer(EntityPlayerMP player) {
+    public static void dispatchSyncForAllTypes(EntityPlayerMP player) {
         PlayerSyncState state = playerSyncState.computeIfAbsent(player.getUniqueID(), PlayerSyncState::new);
 
         // Registry-driven login iteration: iterate only cached types
@@ -194,7 +191,7 @@ public class SyncController {
         else // The client and server agree on identity, so seed the stored state from the report.
             state.applyHandshake(clientRevisions);
 
-        syncPlayer(player);
+        dispatchSyncForAllTypes(player);
     }
 
 
@@ -217,20 +214,41 @@ public class SyncController {
     // ═══════════════════════════════════════════════════════════════════════
     // Server-side dispatchers — registry-driven
     // ═══════════════════════════════════════════════════════════════════════
+    public static void syncUpdate(SyncType type, NBTTagCompound compound) {
+        Map<SyncType, Integer> revisions = invalidateCaches(type);
+        int revision = getRequestedInvalidationRevision(type, revisions);
+        PacketHandler.Instance.sendToAll(new SyncPacket(type, EnumSyncAction.UPDATE, -1, null, revision, compound));
+        updateAllPlayerRevisions(revisions);
+    }
 
-    public static void syncRemove(SyncType syncType, int id) {
-        Map<SyncType, Integer> revisions = invalidateCaches(syncType);
-        int revision = getRequestedInvalidationRevision(syncType, revisions);
-        PacketHandler.Instance.sendToAll(new SyncPacket(syncType, EnumSyncAction.REMOVE, id, revision, new NBTTagCompound()));
+    public static void syncUpdate(SyncType type, String key, NBTTagCompound compound) {
+        Map<SyncType, Integer> revisions = invalidateCaches(type);
+        int revision = getRequestedInvalidationRevision(type, revisions);
+        PacketHandler.Instance.sendToAll(new SyncPacket(type, EnumSyncAction.UPDATE, -1, key, revision, compound));
         updateAllPlayerRevisions(revisions);
     }
 
     public static void syncUpdate(SyncType type, int cat, NBTTagCompound compound) {
         Map<SyncType, Integer> revisions = invalidateCaches(type);
         int revision = getRequestedInvalidationRevision(type, revisions);
-        PacketHandler.Instance.sendToAll(new SyncPacket(type, EnumSyncAction.UPDATE, cat, revision, compound));
+        PacketHandler.Instance.sendToAll(new SyncPacket(type, EnumSyncAction.UPDATE, cat, null, revision, compound));
         updateAllPlayerRevisions(revisions);
     }
+
+    public static void syncRemove(SyncType syncType, String key) {
+        Map<SyncType, Integer> revisions = invalidateCaches(syncType);
+        int revision = getRequestedInvalidationRevision(syncType, revisions);
+        PacketHandler.Instance.sendToAll(new SyncPacket(syncType, EnumSyncAction.REMOVE, -1, key, revision, null));
+        updateAllPlayerRevisions(revisions);
+    }
+
+    public static void syncRemove(SyncType syncType, int id) {
+        Map<SyncType, Integer> revisions = invalidateCaches(syncType);
+        int revision = getRequestedInvalidationRevision(syncType, revisions);
+        PacketHandler.Instance.sendToAll(new SyncPacket(syncType, EnumSyncAction.REMOVE, id, null, revision, null));
+        updateAllPlayerRevisions(revisions);
+    }
+
 
     // ═══════════════════════════════════════════════════════════════════════
     // Client-side handlers — registry-driven handler delegation
@@ -250,11 +268,12 @@ public class SyncController {
     }
 
     @SideOnly(Side.CLIENT)
-    public static void clientHandleUpdate(SyncType syncType, int category_id, int revision, NBTTagCompound compound) {
+    public static void clientHandleUpdate(SyncType syncType, int id, String key, int revision, NBTTagCompound compound) {
         SyncHandler handler = SyncRegistry.getHandler(syncType);
         if (handler == null) return;
         try {
-            handler.clientHandleUpdate(compound, category_id);
+            handler.clientHandleUpdate(compound, id);
+            handler.clientHandleUpdate(compound, key);
         } catch (Exception e) {
             LogWriter.error("[SyncController] Failed to handle UPDATE for sync type " + syncType, e);
         }
@@ -263,12 +282,12 @@ public class SyncController {
     }
 
     @SideOnly(Side.CLIENT)
-    public static void clientHandleRemove(SyncType syncType, int id, int revision, NBTTagCompound compound) {
+    public static void clientHandleRemove(SyncType syncType, int id, String key, int revision) {
         SyncHandler handler = SyncRegistry.getHandler(syncType);
         if (handler == null) return;
         try {
             handler.clientHandleRemove(id);
-            handler.clientHandleRemove(compound);
+            handler.clientHandleRemove(key);
         } catch (Exception e) {
             LogWriter.error("[SyncController] Failed to handle REMOVE for sync type " + syncType, e);
         }

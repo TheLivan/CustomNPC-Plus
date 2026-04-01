@@ -52,8 +52,26 @@ public interface SyncHandler {
      * @param fullCompound the full serialized dataset from {@link #serializeAll()}
      */
     @SideOnly(Side.CLIENT)
-    void clientHandleReload(NBTTagCompound fullCompound);
+    default void clientHandleReload(NBTTagCompound fullCompound){
+        // No-op: type does not support individual updates
+    }
 
+    /**
+     * Handle an UPDATE action on the client.
+     * Deserialize a single object and insert/replace it in the client-side data.
+     *
+     * <p>Default: no-op. Types that don't support individual updates
+     * use {@code syncAll()} for full reload instead.</p>
+     *
+     * @param compound   the serialized single object
+     * @param categoryKey the parent category key (null if not applicable)
+     */
+    @SideOnly(Side.CLIENT)
+    default void clientHandleUpdate(NBTTagCompound compound, String categoryKey) {
+        // No-op: type does not support individual updates
+    }
+
+    
     /**
      * Handle an UPDATE action on the client. Deserialize a single
      * entity and insert/replace it in the client-side data.
@@ -75,7 +93,7 @@ public interface SyncHandler {
      * Int-keyed handlers should override {@link #clientHandleRemove(int)} instead.
      */
     @SideOnly(Side.CLIENT)
-    default void clientHandleRemove(NBTTagCompound compound) {
+    default void clientHandleRemove(String key) {
     }
 
     /**

@@ -28,6 +28,7 @@ public final class SyncPacket extends LargeAbstractPacket {
     private EnumSyncAction enumSyncAction;
     private NBTTagCompound syncData;
     private int operationID;
+    private String operationKey;
     private int revision = -1;
     private byte[] cachedPayload;
     private byte[][] cachedChunks;
@@ -36,14 +37,15 @@ public final class SyncPacket extends LargeAbstractPacket {
     }
 
     public SyncPacket(SyncType syncType, EnumSyncAction enumSyncAction, int catId, NBTTagCompound syncData) {
-        this(syncType, enumSyncAction, catId, -1, syncData);
+        this(syncType, enumSyncAction, catId, null, -1, syncData);
     }
 
-    public SyncPacket(SyncType syncType, EnumSyncAction enumSyncAction, int catId, int revision, NBTTagCompound syncData) {
+    public SyncPacket(SyncType syncType, EnumSyncAction enumSyncAction, int operationId, String operationKey, int revision, NBTTagCompound syncData) {
         this.syncType = syncType;
         this.enumSyncAction = enumSyncAction;
         this.syncData = syncData;
-        this.operationID = catId;
+        this.operationID = operationId;
+        this.operationKey = operationKey;
         this.revision = revision;
     }
 
@@ -72,13 +74,19 @@ public final class SyncPacket extends LargeAbstractPacket {
             return cachedPayload;
         }
 
+        boolean hasKey = operationKey != null;
+        boolean hasNbt = syncData != null;
+        
         ByteBuf buffer = Unpooled.buffer();
         try {
             buffer.writeInt(syncType.ordinal());
             buffer.writeInt(enumSyncAction.ordinal());
             buffer.writeInt(operationID);
+            buffer.writeBoolean(hasKey);
+            if (hasKey) ByteBufUtils.writeString(buffer, operationKey);
             buffer.writeInt(revision);
-            ByteBufUtils.writeBigNBT(buffer, syncData);
+            buffer.writeBoolean(hasNbt);
+            if (hasNbt) ByteBufUtils.writeBigNBT(buffer, syncData);
 
             byte[] bytes = new byte[buffer.readableBytes()];
             buffer.readBytes(bytes);
@@ -126,39 +134,32 @@ public final class SyncPacket extends LargeAbstractPacket {
 
         int syncTypeOrdinal = data.readInt();
         int syncActionOrdinal = data.readInt();
-        int categoryID = data.readInt();
-        int incomingRevision = data.readInt();
+        operationID = data.readInt();
+        if (data.readBoolean()) operationKey = ByteBufUtils.readString(data);
+        revision = data.readInt();
+        if (data.readBoolean()) syncData = ByteBufUtils.readBigNBT(data);
 
-        SyncType type = SyncType.byOrdinal(syncTypeOrdinal);
-        if (type == null) {
+
+        syncType = SyncType.byOrdinal(syncTypeOrdinal);
+        if (syncType == null) {
             LogWriter.error("[SyncPacket] Unknown sync type ordinal: " + syncTypeOrdinal + "; skipping");
             return;
         }
+
         EnumSyncAction action = EnumSyncAction.values()[syncActionOrdinal];
-        try {
-            NBTTagCompound tag = ByteBufUtils.readBigNBT(data);
-            handleSyncPacketClient(type, action, categoryID, incomingRevision, tag);
-        } catch (RuntimeException e) {
-            LogWriter.error(String.format("Attempted to Sync %s but it was too big", type.toString()));
-        }
+        handleSync(syncType, action, operationID, operationKey, revision, syncData);
     }
 
-    private void handleSyncPacketClient(
-        SyncType syncType,
-        EnumSyncAction enumSyncAction,
-        int id,
-        int incomingRevision,
-        NBTTagCompound data
-    ) {
-        switch (enumSyncAction) {
+    private void handleSync(SyncType type, EnumSyncAction action, int id, String key, int revision, NBTTagCompound data) {
+        switch (action) {
             case RELOAD:
-                SyncController.clientHandleAll(syncType, incomingRevision, data);
+                SyncController.clientHandleAll(type, revision, data);
                 break;
             case UPDATE:
-                SyncController.clientHandleUpdate(syncType, id, incomingRevision, data);
+                SyncController.clientHandleUpdate(type, id, key, revision, data);
                 break;
             case REMOVE:
-                SyncController.clientHandleRemove(syncType, id, incomingRevision, data);
+                SyncController.clientHandleRemove(type, id, key, revision);
                 break;
         }
     }
