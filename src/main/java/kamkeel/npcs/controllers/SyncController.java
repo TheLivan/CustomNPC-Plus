@@ -272,6 +272,7 @@ public class SyncController {
         SyncHandler handler = SyncRegistry.getHandler(syncType);
         if (handler == null) return;
         try {
+            handler.clientHandleUpdate(compound);
             handler.clientHandleUpdate(compound, id);
             handler.clientHandleUpdate(compound, key);
         } catch (Exception e) {

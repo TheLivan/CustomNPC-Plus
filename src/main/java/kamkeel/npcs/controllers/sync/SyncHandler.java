@@ -64,6 +64,20 @@ public interface SyncHandler {
      * use {@code syncAll()} for full reload instead.</p>
      *
      * @param compound   the serialized single object
+     */
+    @SideOnly(Side.CLIENT)
+    default void clientHandleUpdate(NBTTagCompound compound) {
+        // No-op: type does not support individual updates
+    }
+    
+    /**
+     * Handle an UPDATE action on the client.
+     * Deserialize a single object and insert/replace it in the client-side data.
+     *
+     * <p>Default: no-op. Types that don't support individual updates
+     * use {@code syncAll()} for full reload instead.</p>
+     *
+     * @param compound   the serialized single object
      * @param categoryKey the parent category key (null if not applicable)
      */
     @SideOnly(Side.CLIENT)
