@@ -82,9 +82,11 @@ public final class SyncPacket extends LargeAbstractPacket {
             buffer.writeInt(syncType.ordinal());
             buffer.writeInt(enumSyncAction.ordinal());
             buffer.writeInt(operationID);
+            buffer.writeInt(revision);
+
+            // UPDATE/REMOVE UNIQUE FIELDS
             buffer.writeBoolean(hasKey);
             if (hasKey) ByteBufUtils.writeString(buffer, operationKey);
-            buffer.writeInt(revision);
             buffer.writeBoolean(hasNbt);
             if (hasNbt) ByteBufUtils.writeBigNBT(buffer, syncData);
 
@@ -135,9 +137,16 @@ public final class SyncPacket extends LargeAbstractPacket {
         int syncTypeOrdinal = data.readInt();
         int syncActionOrdinal = data.readInt();
         operationID = data.readInt();
-        if (data.readBoolean()) operationKey = ByteBufUtils.readString(data);
         revision = data.readInt();
-        if (data.readBoolean()) syncData = ByteBufUtils.readBigNBT(data);
+
+        EnumSyncAction action = EnumSyncAction.values()[syncActionOrdinal];
+
+        // These fields only exist for UPDATE/REMOVE
+        if (action != EnumSyncAction.RELOAD) {
+            if (data.readBoolean()) operationKey = ByteBufUtils.readString(data);
+            if (data.readBoolean()) syncData = ByteBufUtils.readBigNBT(data);
+        } else
+            syncData = ByteBufUtils.readBigNBT(data);
 
 
         syncType = SyncType.byOrdinal(syncTypeOrdinal);
@@ -146,7 +155,6 @@ public final class SyncPacket extends LargeAbstractPacket {
             return;
         }
 
-        EnumSyncAction action = EnumSyncAction.values()[syncActionOrdinal];
         handleSync(syncType, action, operationID, operationKey, revision, syncData);
     }
 
