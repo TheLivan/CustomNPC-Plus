@@ -143,7 +143,7 @@ public class ScriptPlayerEventHandler {
                 }
 
                 if (playerData.updateClient) {
-                    PlayerDataSyncHandler.getInstance().syncPlayerData((EntityPlayerMP) player, true);
+                    PlayerDataSyncHandler.syncPlayerData((EntityPlayerMP) player, true);
                     playerData.updateClient = false;
                 }
 

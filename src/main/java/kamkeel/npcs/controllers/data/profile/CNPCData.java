@@ -30,7 +30,7 @@ public class CNPCData implements IProfileData {
     public void save(EntityPlayer player) {
         PlayerData customNPCData = PlayerData.get(player);
         customNPCData.save();
-        PlayerDataSyncHandler.getInstance().syncPlayerData((EntityPlayerMP) player, false);
+        PlayerDataSyncHandler.syncPlayerData((EntityPlayerMP) player, false);
     }
 
     @Override

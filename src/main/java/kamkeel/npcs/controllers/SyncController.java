@@ -122,7 +122,7 @@ public class SyncController {
 
     private static void sendPostLoginPackets(EntityPlayerMP player) {
         DBCAddon.instance.syncPlayer(player);
-        PlayerDataSyncHandler.getInstance().syncPlayerData(player, false);
+        PlayerDataSyncHandler.syncPlayerData(player, false);
         PartyInfoPacket.sendPartyData(player);
         ProfileSharedQuestPacket.sendToPlayer(player);
 
@@ -210,6 +210,18 @@ public class SyncController {
         updateAllPlayerRevisions(type, payload.getRevision());
     }
 
+    // ═══════════════════════════════════════════════════════════════════════
+    // Player data sync
+    // ═══════════════════════════════════════════════════════════════════════
+
+    public static void syncPlayerData(SyncType type, NBTTagCompound compound, boolean fullData, EntityPlayerMP player) {
+        Map<SyncType, Integer> revisions = invalidateCaches(type);
+        int revision = getRequestedInvalidationRevision(type, revisions);
+        PacketHandler.Instance.sendToPlayer(
+                new SyncPacket(type, EnumSyncAction.UPDATE, fullData ? 1 : 0, null, revision, compound), player);
+        updateAllPlayerRevisions(revisions);
+    }
+    
     // ═══════════════════════════════════════════════════════════════════════
     // Server-side dispatchers — registry-driven
     // ═══════════════════════════════════════════════════════════════════════
