@@ -80,13 +80,7 @@ public class SyncController {
      * <p>Handler registration order matches the original hard-coded
      * LOGIN_SYNC_TYPES array for behavioral parity.</p>
      */
-    public static void load() {
-        cacheEntries.clear();
-        playerSyncState.clear();
-        SyncRegistry.clear();
-
-        // Register all core handlers in deterministic order
-        // Order matches original LOGIN_SYNC_TYPES for login sync ordering
+    public static void register() {
         SyncRegistry.register(SyncType.FACTION, new FactionSyncHandler());
         SyncRegistry.register(SyncType.DIALOG, new DialogSyncHandler());
         SyncRegistry.register(SyncType.DIALOG_CATEGORY, new DialogCategorySyncHandler());
@@ -101,6 +95,11 @@ public class SyncController {
         SyncRegistry.register(SyncType.MAGIC_CYCLE, new MagicCycleSyncHandler());
         SyncRegistry.register(SyncType.CUSTOM_ABILITY, new CustomAbilitySyncHandler());
         SyncRegistry.register(SyncType.CHAINED_ABILITY, new ChainedAbilitySyncHandler());
+    }
+    
+    public static void load() {
+        cacheEntries.clear();
+        playerSyncState.clear();
 
         // Register caches for all cached (login-sync) types
         // The cache supplier delegates to the handler's serializeAll()
