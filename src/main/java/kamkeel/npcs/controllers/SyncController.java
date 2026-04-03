@@ -22,6 +22,7 @@ import net.minecraft.nbt.NBTTagCompound;
 import net.minecraft.server.MinecraftServer;
 import noppes.npcs.LogWriter;
 import noppes.npcs.client.ClientCacheHandler;
+import noppes.npcs.client.gui.util.IGuiData;
 import noppes.npcs.controllers.data.PlayerData;
 
 import java.util.HashMap;
@@ -291,6 +292,9 @@ public class SyncController {
         }
         
         ClientCacheHandler.updateClientRevision(syncType, revision);
+        
+        // New GUI data handling approach
+        IGuiData.notifyUpdate(compound, key, id);
     }
 
     @SideOnly(Side.CLIENT)
@@ -305,6 +309,9 @@ public class SyncController {
         }
         
         ClientCacheHandler.updateClientRevision(syncType, revision);
+
+        // New GUI data handling approach
+        IGuiData.notifyRemove(key, id);
     }
 
     // ═══════════════════════════════════════════════════════════════════════
