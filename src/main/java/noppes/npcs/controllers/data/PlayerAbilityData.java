@@ -773,21 +773,21 @@ public class PlayerAbilityData extends AbstractDataAbilities implements IPlayerA
     }
 
     /**
-     * Fully reset ability state when changing dimensions.
-     * Clears cooldowns so the player can immediately use abilities in the new dimension.
+     * Fully reset transient ability execution state when changing dimensions.
+     * Cooldowns are preserved so dimension changes cannot bypass them.
      * Keeps active toggles (dimension change shouldn't reset ongoing effects).
      */
     public void resetOnDimensionChange() {
         trackingAbilityPosition = false;
-        onEntityReconstructed(true, false);
+        onEntityReconstructed(false, false);
     }
 
     /**
      * Reset ability state when a large-distance teleport is detected during execution.
-     * Same behavior as dimension change — silent cleanup, clear cooldowns, keep toggles.
+     * Same behavior as dimension change: silent cleanup, preserve cooldowns, keep toggles.
      */
     public void resetOnTeleport() {
-        onEntityReconstructed(true, false);
+        onEntityReconstructed(false, false);
     }
 
     /**
