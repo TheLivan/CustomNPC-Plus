@@ -76,6 +76,7 @@ public class DialogController implements IDialogHandler {
                 if (!file.isDirectory())
                     continue;
                 DialogCategory category = loadCategoryDir(file);
+                List<Dialog> reassigned = new ArrayList<Dialog>();
                 Iterator<Integer> ite = category.dialogs.keySet().iterator();
                 while (ite.hasNext()) {
                     int id = ite.next();
@@ -83,11 +84,39 @@ public class DialogController implements IDialogHandler {
                         lastUsedDialogID = id;
                     Dialog dialog = category.dialogs.get(id);
                     if (dialogs.containsKey(id)) {
-                        LogWriter.error("Duplicate id " + dialog.id + " from category " + category.title);
+                        // Find the next free ID, skipping any already claimed slots.
+                        int newId = lastUsedDialogID;
+                        do { newId++; } while (dialogs.containsKey(newId));
+                        lastUsedDialogID = newId;
+
+                        // Dialog IDs live in the filename, not inside the JSON body,
+                        // so a simple rename permanently resolves the conflict.
+                        File catDir = new File(getDir(), category.title);
+                        File oldFile = new File(catDir, id + ".json");
+                        File newFile = new File(catDir, newId + ".json");
+                        boolean renamed = oldFile.renameTo(newFile);
+
+                        dialog.id = newId;
                         ite.remove();
+                        reassigned.add(dialog);
+
+                        if (renamed) {
+                            LogWriter.info("Dialog ID conflict: reassigned \"" + dialog.title
+                                + "\" from id " + id + " to " + newId
+                                + " in category \"" + category.title + "\"");
+                        } else {
+                            LogWriter.error("Dialog ID conflict: could not rename file for \""
+                                + dialog.title + "\" (id " + id
+                                + " in category \"" + category.title + "\") to " + newId);
+                        }
                     } else {
                         dialogs.put(id, dialog);
                     }
+                }
+                // Re-register reassigned dialogs under their new IDs.
+                for (Dialog dialog : reassigned) {
+                    dialogs.put(dialog.id, dialog);
+                    category.dialogs.put(dialog.id, dialog);
                 }
                 lastUsedCatID++;
                 category.id = lastUsedCatID;
