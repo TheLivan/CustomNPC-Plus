@@ -840,19 +840,7 @@ public abstract class Ability implements IAbility, IAbilityAction {
                 return sb.toString();
             }).tab("General"));
 
-            defs.add(FieldDef.subGuiField("ability.magic.editor",
-                () -> new SubGuiAbilityMagic(magicData.copy()),
-                gui -> {
-                    MagicData result = ((SubGuiAbilityMagic) gui).magicData;
-                    magicData.getMagics().clear();
-                    for (Map.Entry<Integer, MagicEntry> e : result.getMagics().entrySet()) {
-                        magicData.getMagics().put(e.getKey(), e.getValue());
-                    }
-                })
-                .buttonLabel(() -> magicData.isEmpty()
-                    ? StatCollector.translateToLocal("ability.magic.usesCaster")
-                    : magicData.getMagics().size() + " Magic(s)")
-                .tab("General"));
+            defs.add(SubGuiAbilityMagic.createMagicField(magicData));
         }
 
         // ── Target tab ───────────────────────────────────────────────
