@@ -114,6 +114,8 @@ public abstract class EntityEnergyBarrier extends EntityEnergyAbility {
     protected EnergyBarrierData barrierData = new EnergyBarrierData();
     protected float currentHealth;
     protected int ticksAlive = 0;
+    /** Absolute world time the barrier expires at, so ticks it misses cannot extend it. */
+    protected long barrierDeathTime = -1;
 
     // ==================== DATA WATCHER INDICES ====================
     protected static final int DW_HEALTH_PERCENT = 21;
@@ -510,15 +512,16 @@ public abstract class EntityEnergyBarrier extends EntityEnergyAbility {
                 }
             }
 
-            // Duration check
-            if (barrierData.useDuration && ticksAlive >= barrierData.durationTicks) {
-                onBarrierDestroyed();
-                this.setDead();
-                return true;
+            // Set the deadline on the first tick after charging, so lifetime starts when the
+            // barrier is actually up. Counting elapsed ticks instead would let any tick the
+            // entity misses - chunk unload, for one - extend it past its configured duration.
+            if (barrierDeathTime < 0 && !isCharging()) {
+                barrierDeathTime = worldObj.getTotalWorldTime()
+                    + (barrierData.useDuration ? barrierData.durationTicks : BARRIER_HARD_LIFETIME_CAP);
             }
 
-            // Absolute hard lifetime cap (safety net for barriers with no duration)
-            if (ticksAlive > BARRIER_HARD_LIFETIME_CAP) {
+            // Duration check, and the hard lifetime cap for barriers with no duration
+            if (barrierDeathTime >= 0 && worldObj.getTotalWorldTime() >= barrierDeathTime) {
                 onBarrierDestroyed();
                 this.setDead();
                 return true;
@@ -865,6 +868,7 @@ public abstract class EntityEnergyBarrier extends EntityEnergyAbility {
     protected void writeBarrierBaseNBT(NBTTagCompound nbt) {
         writeEnergyBaseNBT(nbt);
         nbt.setInteger("TicksAlive", ticksAlive);
+        nbt.setLong("BarrierDeathTime", barrierDeathTime);
         nbt.setFloat("CurrentHealth", currentHealth);
         nbt.setBoolean("Charging", charging);
         nbt.setInteger("ChargeTick", chargeTick);
@@ -879,6 +883,7 @@ public abstract class EntityEnergyBarrier extends EntityEnergyAbility {
     protected void readBarrierBaseNBT(NBTTagCompound nbt) {
         readEnergyBaseNBT(nbt);
         this.ticksAlive = nbt.getInteger("TicksAlive");
+        this.barrierDeathTime = nbt.hasKey("BarrierDeathTime") ? nbt.getLong("BarrierDeathTime") : -1;
         this.currentHealth = nbt.getFloat("CurrentHealth");
         if (Float.isNaN(currentHealth) || Float.isInfinite(currentHealth) || currentHealth < 0) currentHealth = barrierData.maxHealth;
         this.charging = nbt.hasKey("Charging") && nbt.getBoolean("Charging");
