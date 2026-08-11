@@ -188,22 +188,35 @@ public class DataAbilities extends AbstractDataAbilities {
         if (maxCooldown > minCooldown) {
             baseCooldown = minCooldown + random.nextInt(maxCooldown - minCooldown + 1);
         }
-        cooldownEndTime = npc.worldObj.getTotalWorldTime() + baseCooldown + ability.getCooldownTicks();
+        long now = npc.worldObj.getTotalWorldTime();
 
-        // Additionally set per-ability cooldown if enabled
         if (ability.isPerAbilityCooldown() && ability.getCooldownTicks() > 0) {
-            long endTime = npc.worldObj.getTotalWorldTime() + ability.getCooldownTicks();
-            setPerAbilityCooldown(ability.getName(), endTime, ability.getCooldownTicks());
+            // The ability's own cooldown is tracked against the ability, so the global timer
+            // only paces how often the NPC acts. Folding the ability's cooldown into it as
+            // well would always outlast the per-ability entry and make it unreachable.
+            cooldownEndTime = now + baseCooldown;
+            setPerAbilityCooldown(ability.getName(), now + ability.getCooldownTicks(), ability.getCooldownTicks());
+        } else {
+            cooldownEndTime = now + baseCooldown + ability.getCooldownTicks();
         }
     }
 
     @Override
     protected void rollChainCooldown(ChainedAbility chain) {
-        int baseCooldown = minCooldown;
-        if (maxCooldown > minCooldown) {
-            baseCooldown = minCooldown + random.nextInt(maxCooldown - minCooldown + 1);
+        long now = npc.worldObj.getTotalWorldTime();
+        boolean perAbility = chain.isPerAbilityCooldown() && chain.getCooldownTicks() > 0;
+
+        if (!chain.isIgnoreCooldown()) {
+            int baseCooldown = minCooldown;
+            if (maxCooldown > minCooldown) {
+                baseCooldown = minCooldown + random.nextInt(maxCooldown - minCooldown + 1);
+            }
+            cooldownEndTime = perAbility ? now + baseCooldown : now + baseCooldown + chain.getCooldownTicks();
         }
-        cooldownEndTime = npc.worldObj.getTotalWorldTime() + baseCooldown + chain.getCooldownTicks();
+
+        if (perAbility) {
+            setPerAbilityCooldown(chain.getName(), now + chain.getCooldownTicks(), chain.getCooldownTicks());
+        }
     }
 
     @Override
@@ -471,10 +484,15 @@ public class DataAbilities extends AbstractDataAbilities {
             return false;
         }
 
-        // Per-ability cooldown filter: ability may have its own independent cooldown
+        // Per-ability cooldown filter: ability/chain may have its own independent cooldown
         if (!action.isChain()) {
             Ability ab = (Ability) action;
             if (ab.isPerAbilityCooldown() && isOnPerAbilityCooldown(ab.getName())) {
+                return false;
+            }
+        } else {
+            ChainedAbility ch = (ChainedAbility) action;
+            if (ch.isPerAbilityCooldown() && isOnPerAbilityCooldown(ch.getName())) {
                 return false;
             }
         }
