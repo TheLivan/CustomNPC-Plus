@@ -84,14 +84,22 @@ public class DialogController implements IDialogHandler {
                         lastUsedDialogID = id;
                     Dialog dialog = category.dialogs.get(id);
                     if (dialogs.containsKey(id)) {
-                        // Find the next free ID, skipping any already claimed slots.
-                        int newId = lastUsedDialogID;
-                        do { newId++; } while (dialogs.containsKey(newId));
-                        lastUsedDialogID = newId;
-
                         // Dialog IDs live in the filename, not inside the JSON body,
                         // so a simple rename permanently resolves the conflict.
                         File catDir = new File(getDir(), category.title);
+
+                        // Find the next free ID. It has to clear three things: the ids already
+                        // registered globally, the ids this category still holds but has not
+                        // reached yet, and any file already on disk - renameTo overwrites
+                        // silently on POSIX, so landing on an existing file would destroy it.
+                        int newId = lastUsedDialogID;
+                        do {
+                            newId++;
+                        } while (dialogs.containsKey(newId)
+                            || category.dialogs.containsKey(newId)
+                            || new File(catDir, newId + ".json").exists());
+                        lastUsedDialogID = newId;
+
                         File oldFile = new File(catDir, id + ".json");
                         File newFile = new File(catDir, newId + ".json");
                         boolean renamed = oldFile.renameTo(newFile);
