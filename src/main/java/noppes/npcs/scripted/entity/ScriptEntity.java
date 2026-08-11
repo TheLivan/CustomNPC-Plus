@@ -982,7 +982,10 @@ public class ScriptEntity<T extends Entity> implements IEntity {
 
     @Override
     public int hashCode() {
-        return Objects.hash(entity, tempData);
+        // Must key on exactly what equals compares. tempData is mutable and swapped wholesale by
+        // copyTempData, so including it would give two wrappers of the same entity different
+        // hashes - and would change an entry's hash while it sat in a map.
+        return Objects.hashCode(entity);
     }
 
     public void updateEntity() {
