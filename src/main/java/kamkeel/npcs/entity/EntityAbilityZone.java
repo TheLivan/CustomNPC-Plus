@@ -23,10 +23,8 @@ import noppes.npcs.NpcDamageSource;
 import noppes.npcs.entity.EntityNPCInterface;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 
 /**
@@ -157,6 +155,9 @@ public class EntityAbilityZone extends Entity implements IEntityAdditionalSpawnD
     // HAZARD-SPECIFIC PROPERTIES
     // ═══════════════════════════════════════════════════════════════════
 
+    /** Floor on how often a hazard pulses, so a small interval cannot turn into a per-tick scan. */
+    public static final int MIN_DAMAGE_INTERVAL = 5;
+
     private float damagePerSecond = 1.0f;
     private int damageInterval = 20;
     private boolean ignoreIFrames = false;
@@ -172,9 +173,8 @@ public class EntityAbilityZone extends Entity implements IEntityAdditionalSpawnD
     private transient Set<Integer> triggeredEntities = new HashSet<>();
     private transient int triggerFlashTick = -1;
 
+    private transient int ticksSinceDamage = 0;
     private transient Set<Integer> damagedThisTick = new HashSet<>();
-    /** Ticks each entity has spent inside the zone since it was last damaged, by entity id. */
-    private transient Map<Integer, Integer> ticksInZone = new HashMap<>();
 
     private transient Ability sourceAbility = null;
 
@@ -219,6 +219,7 @@ public class EntityAbilityZone extends Entity implements IEntityAdditionalSpawnD
         this.ownerEntityId = owner != null ? owner.getEntityId() : -1;
         double groundY = Ability.findGroundLevel(worldObj, x, y, z) + GROUND_OFFSET;
         this.setPosition(x, groundY, z);
+        this.ticksSinceDamage = damageInterval;
     }
 
     /**
@@ -293,7 +294,7 @@ public class EntityAbilityZone extends Entity implements IEntityAdditionalSpawnD
         zone.shape = shape;
         zone.radius = radius;
         zone.damagePerSecond = damagePerSecond;
-        zone.damageInterval = damageInterval;
+        zone.damageInterval = Math.max(MIN_DAMAGE_INTERVAL, damageInterval);
         zone.ignoreIFrames = ignoreIFrames;
         zone.affectsCaster = affectsCaster;
         zone.durationTicks = durationTicks;
@@ -496,10 +497,13 @@ public class EntityAbilityZone extends Entity implements IEntityAdditionalSpawnD
 
     private void tickHazard() {
         damagedThisTick.clear();
+        ticksSinceDamage++;
 
-        // Membership is checked every tick, not once per damage interval. Sampling on the
-        // interval alone made the effective boundary drift by however far an entity moved in
-        // between, which on a large radius reads as the radius itself being wrong.
+        if (ticksSinceDamage < damageInterval) {
+            return;
+        }
+        ticksSinceDamage = 0;
+
         AxisAlignedBB searchBox = AxisAlignedBB.getBoundingBox(
             posX - radius, posY - 0.5, posZ - radius,
             posX + radius, posY + zoneHeight, posZ + radius
@@ -509,35 +513,21 @@ public class EntityAbilityZone extends Entity implements IEntityAdditionalSpawnD
         @SuppressWarnings("unchecked")
         List<EntityLivingBase> entities = worldObj.getEntitiesWithinAABB(EntityLivingBase.class, searchBox);
 
-        Set<Integer> insideThisTick = new HashSet<>();
         for (EntityLivingBase entity : entities) {
             if (owner != null && entity == owner && !affectsCaster) continue;
             if (damagedThisTick.contains(entity.getEntityId())) continue;
             if (entity != owner && owner instanceof EntityLivingBase && !AbilityTargetHelper.shouldAffect((EntityLivingBase) owner, entity, TargetFilter.ENEMIES, false)) continue;
             if (!isInZone(entity)) continue;
 
-            int entityId = entity.getEntityId();
-            insideThisTick.add(entityId);
-
-            // Entities that just entered are hit immediately, then once per interval of time
-            // actually spent inside.
-            Integer elapsed = ticksInZone.get(entityId);
-            int ticks = elapsed == null ? damageInterval : elapsed + 1;
-            if (ticks < damageInterval) {
-                ticksInZone.put(entityId, ticks);
-                continue;
-            }
-            ticksInZone.put(entityId, 0);
-
             if (damagePerSecond > 0) {
-                applyDamage(entity, owner, damagePerSecond);
+                // The configured value is damage per second, so a pulse deals the share of a
+                // second it covers. Applying it whole made the real rate depend on the interval.
+                applyDamage(entity, owner, damagePerSecond * (damageInterval / 20.0f));
             }
 
             applyEffects(entity);
-            damagedThisTick.add(entityId);
+            damagedThisTick.add(entity.getEntityId());
         }
-
-        ticksInZone.keySet().retainAll(insideThisTick);
     }
 
     private boolean isInZone(EntityLivingBase entity) {
@@ -829,7 +819,7 @@ public class EntityAbilityZone extends Entity implements IEntityAdditionalSpawnD
     public float getDamagePerSecond() { return damagePerSecond; }
     public void setDamagePerSecond(float dps) { this.damagePerSecond = dps; }
     public int getDamageInterval() { return damageInterval; }
-    public void setDamageInterval(int ticks) { this.damageInterval = ticks; }
+    public void setDamageInterval(int ticks) { this.damageInterval = Math.max(MIN_DAMAGE_INTERVAL, ticks); }
     public boolean isAffectsCaster() { return affectsCaster; }
     public void setAffectsCaster(boolean affects) { this.affectsCaster = affects; }
 
