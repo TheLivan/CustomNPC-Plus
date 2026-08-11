@@ -86,9 +86,7 @@ public class EntityCustomNpc extends EntityNPCFlying {
                 worldObj.MAX_ENTITY_RADIUS = newWidth / 2;
             }
 
-            this.width = newWidth;
-            this.height = newHeight;
-            this.setPosition(posX, posY, posZ);
+            applyHitbox(newWidth, newHeight);
         }
     }
 

@@ -1324,9 +1324,21 @@ public abstract class EntityNPCInterface extends EntityCreature implements IEnti
             World.MAX_ENTITY_RADIUS = newWidth / 2;
         }
 
+        applyHitbox(newWidth, newHeight);
+    }
+
+    /**
+     * Applies a new hitbox size. Mirrors vanilla setSize by nudging the npc out of whatever it grew
+     * into -- an overlapped block stops resolving downward collision, so the npc drops through it.
+     */
+    protected void applyHitbox(float newWidth, float newHeight) {
+        float oldWidth = this.width;
         this.width = newWidth;
         this.height = newHeight;
         this.setPosition(posX, posY, posZ);
+
+        if (newWidth > oldWidth && !this.firstUpdate && !this.worldObj.isRemote)
+            this.moveEntity(oldWidth - newWidth, 0.0D, oldWidth - newWidth);
     }
 
     @Override
