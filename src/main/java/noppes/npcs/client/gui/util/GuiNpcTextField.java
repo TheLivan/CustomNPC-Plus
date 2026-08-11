@@ -1,17 +1,19 @@
 package noppes.npcs.client.gui.util;
 
+import kamkeel.npcs.util.TextSplitter;
+import kamkeel.npcs.util.FileNameHelper;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.FontRenderer;
 import net.minecraft.client.gui.GuiScreen;
 import net.minecraft.client.gui.GuiTextField;
-import net.minecraft.util.StatCollector;
 import net.minecraft.client.gui.ScaledResolution;
+import net.minecraft.client.renderer.RenderHelper;
+import net.minecraft.util.StatCollector;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL12;
-import net.minecraft.client.renderer.RenderHelper;
-import kamkeel.npcs.util.TextSplitter;
+
+import java.util.ArrayList;
 import java.util.List;
-import java.util.Iterator;
 
 public class GuiNpcTextField extends GuiTextField {
     public boolean enabled = true;
@@ -26,11 +28,12 @@ public class GuiNpcTextField extends GuiTextField {
     public float minFloat = 0, maxFloat = Float.MAX_VALUE, defFloat = 0;
     protected static GuiNpcTextField activeTextfield = null;
     public boolean canEdit = true;
+    private boolean fileNameSafe = false;
     public String hoverableText = "";
     private boolean wasHovered = false;
     private int hoverCount = 0;
 
-    private final int[] allowedSpecialChars = {14, 211, 203, 205};
+    private final int[] allowedSpecialChars = {14, 211, 203, 205, 199, 207};
 
     public GuiNpcTextField(int id, GuiScreen parent, FontRenderer fontRenderer, int i, int j, int k, int l, String s) {
         super(fontRenderer, i, j, k, l);
@@ -60,6 +63,9 @@ public class GuiNpcTextField extends GuiTextField {
         if (integersOnly && getText().isEmpty() && c == '-')
             return true;
 
+        if ((floatsOnly || doublesOnly) && getText().isEmpty() && c == '-')
+            return true;
+
         for (int j : allowedSpecialChars)
             if (j == i)
                 return true;
@@ -69,9 +75,48 @@ public class GuiNpcTextField extends GuiTextField {
 
     @Override
     public boolean textboxKeyTyped(char c, int i) {
-        if (!charAllowed(c, i) || !canEdit)
+        if (!canEdit || !isFocused())
+            return false;
+
+        if (fileNameSafe && !GuiScreen.isCtrlKeyDown() && !isFileNameCharAllowed(c, i)) {
+            return false;
+        }
+
+        // Allow Ctrl shortcuts (select all, copy, paste, cut) to bypass char filter
+        if (GuiScreen.isCtrlKeyDown()) {
+            // For Ctrl+V (paste) on numeric fields, filter clipboard to valid chars
+            if (i == 47 && isNumericField()) {
+                String clipboard = GuiScreen.getClipboardString();
+                if (clipboard != null) {
+                    StringBuilder filtered = new StringBuilder();
+                    for (char ch : clipboard.toCharArray()) {
+                        if (Character.isDigit(ch) || ch == '-' || ((doublesOnly || floatsOnly) && ch == '.'))
+                            filtered.append(ch);
+                    }
+                    if (filtered.length() > 0)
+                        writeText(filtered.toString());
+                }
+                return true;
+            }
+            if (i == 47 && fileNameSafe) {
+                String clipboard = GuiScreen.getClipboardString();
+                if (clipboard != null) {
+                    String filtered = filterFileNameClipboard(clipboard);
+                    if (!filtered.isEmpty())
+                        writeText(filtered);
+                }
+                return true;
+            }
+            boolean handled = super.textboxKeyTyped(c, i);
+            return handled;
+        }
+        if (!charAllowed(c, i))
             return false;
         return super.textboxKeyTyped(c, i);
+    }
+
+    private boolean isNumericField() {
+        return integersOnly || doublesOnly || floatsOnly;
     }
 
     public boolean isEmpty() {
@@ -155,6 +200,9 @@ public class GuiNpcTextField extends GuiTextField {
             else if (getFloat() > maxFloat)
                 setText(maxFloat + "");
         }
+        if (fileNameSafe) {
+            normalizeFileNameText();
+        }
         setCursorPositionZero();
         if (listener != null)
             listener.unFocused(this);
@@ -214,8 +262,54 @@ public class GuiNpcTextField extends GuiTextField {
         return this;
     }
 
+    public GuiNpcTextField setFileNameSafe() {
+        fileNameSafe = true;
+        normalizeFileNameText();
+        return this;
+    }
+
+    private boolean isSpecialNavigationKey(int keyCode) {
+        for (int allowed : allowedSpecialChars) {
+            if (allowed == keyCode) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean isFileNameCharAllowed(char c, int keyCode) {
+        if (isSpecialNavigationKey(keyCode) || c < 32) {
+            return true;
+        }
+        return Character.isLetterOrDigit(c) || c == '_' || c == '-' || c == ' ';
+    }
+
+    private String filterFileNameClipboard(String clipboard) {
+        StringBuilder filtered = new StringBuilder(clipboard.length());
+        for (int idx = 0; idx < clipboard.length(); idx++) {
+            char c = clipboard.charAt(idx);
+            if (Character.isLetterOrDigit(c) || c == '_' || c == '-') {
+                filtered.append(c);
+            } else if (Character.isWhitespace(c)) {
+                filtered.append(' ');
+            }
+        }
+        return filtered.toString();
+    }
+
+    private void normalizeFileNameText() {
+        String current = getText();
+        String sanitized = FileNameHelper.sanitizeTextInput(current);
+        if (sanitized.equals(current)) return;
+
+        int cursor = getCursorPosition();
+        setText(sanitized);
+        setCursorPosition(Math.min(cursor, sanitized.length()));
+    }
+
     public void setHoverText(String text) {
-        this.hoverableText = StatCollector.translateToLocal(text);
+        String translated = StatCollector.translateToLocal(text);
+        this.hoverableText = translated == null ? "" : translated.replace("\\n", "\n");
     }
 
     public boolean hasHoverText() {
@@ -224,14 +318,18 @@ public class GuiNpcTextField extends GuiTextField {
 
     public boolean isMouseOver(int mouseX, int mouseY) {
         return mouseX >= xPosition && mouseX < xPosition + width &&
-               mouseY >= yPosition && mouseY < yPosition + height;
+            mouseY >= yPosition && mouseY < yPosition + height;
     }
 
     public void drawHover(int mouseX, int mouseY, boolean hasSubGui) {
+        drawHover(mouseX, mouseY, mouseX, mouseY, hasSubGui);
+    }
+
+    public void drawHover(int hitMouseX, int hitMouseY, int tooltipMouseX, int tooltipMouseY, boolean hasSubGui) {
         if (hasSubGui || !enabled || hoverableText.isEmpty())
             return;
 
-        boolean isHovered = isMouseOver(mouseX, mouseY);
+        boolean isHovered = isMouseOver(hitMouseX, hitMouseY);
         if (!isHovered) {
             wasHovered = false;
             hoverCount = 0;
@@ -249,11 +347,28 @@ public class GuiNpcTextField extends GuiTextField {
             GL11.glPushMatrix();
             Minecraft mc = Minecraft.getMinecraft();
             GL11.glColor4f(1, 1, 1, 1);
-            List<String> lines = TextSplitter.splitText(hoverableText, 30);
-            drawHoveringText(lines, mouseX, mouseY, mc);
+            List<String> lines = splitHoverText(hoverableText, 30);
+            drawHoveringText(lines, tooltipMouseX, tooltipMouseY, mc);
             GL11.glDisable(GL11.GL_LIGHTING);
             GL11.glPopMatrix();
         }
+    }
+
+    private List<String> splitHoverText(String text, int maxLineLength) {
+        List<String> lines = new ArrayList<String>();
+        if (text == null || text.isEmpty())
+            return lines;
+
+        String normalized = text.replace("\\n", "\n");
+        String[] explicitLines = normalized.split("\\r?\\n", -1);
+        for (String line : explicitLines) {
+            if (line.isEmpty()) {
+                lines.add("");
+                continue;
+            }
+            lines.addAll(TextSplitter.splitText(line, maxLineLength));
+        }
+        return lines;
     }
 
     protected void drawHoveringText(List<String> textLines, int x, int y, Minecraft mc) {
@@ -334,14 +449,14 @@ public class GuiNpcTextField extends GuiTextField {
     }
 
     protected void drawGradientRect(int left, int top, int right, int bottom, int startColor, int endColor, int zLevel) {
-        float f = (float)(startColor >> 24 & 255) / 255.0F;
-        float f1 = (float)(startColor >> 16 & 255) / 255.0F;
-        float f2 = (float)(startColor >> 8 & 255) / 255.0F;
-        float f3 = (float)(startColor & 255) / 255.0F;
-        float f4 = (float)(endColor >> 24 & 255) / 255.0F;
-        float f5 = (float)(endColor >> 16 & 255) / 255.0F;
-        float f6 = (float)(endColor >> 8 & 255) / 255.0F;
-        float f7 = (float)(endColor & 255) / 255.0F;
+        float f = (float) (startColor >> 24 & 255) / 255.0F;
+        float f1 = (float) (startColor >> 16 & 255) / 255.0F;
+        float f2 = (float) (startColor >> 8 & 255) / 255.0F;
+        float f3 = (float) (startColor & 255) / 255.0F;
+        float f4 = (float) (endColor >> 24 & 255) / 255.0F;
+        float f5 = (float) (endColor >> 16 & 255) / 255.0F;
+        float f6 = (float) (endColor >> 8 & 255) / 255.0F;
+        float f7 = (float) (endColor & 255) / 255.0F;
         GL11.glDisable(GL11.GL_TEXTURE_2D);
         GL11.glEnable(GL11.GL_BLEND);
         GL11.glDisable(GL11.GL_ALPHA_TEST);
@@ -350,11 +465,11 @@ public class GuiNpcTextField extends GuiTextField {
         net.minecraft.client.renderer.Tessellator tessellator = net.minecraft.client.renderer.Tessellator.instance;
         tessellator.startDrawingQuads();
         tessellator.setColorRGBA_F(f1, f2, f3, f);
-        tessellator.addVertex((double)right, (double)top, (double)zLevel);
-        tessellator.addVertex((double)left, (double)top, (double)zLevel);
+        tessellator.addVertex((double) right, (double) top, (double) zLevel);
+        tessellator.addVertex((double) left, (double) top, (double) zLevel);
         tessellator.setColorRGBA_F(f5, f6, f7, f4);
-        tessellator.addVertex((double)left, (double)bottom, (double)zLevel);
-        tessellator.addVertex((double)right, (double)bottom, (double)zLevel);
+        tessellator.addVertex((double) left, (double) bottom, (double) zLevel);
+        tessellator.addVertex((double) right, (double) bottom, (double) zLevel);
         tessellator.draw();
         GL11.glShadeModel(GL11.GL_FLAT);
         GL11.glDisable(GL11.GL_BLEND);

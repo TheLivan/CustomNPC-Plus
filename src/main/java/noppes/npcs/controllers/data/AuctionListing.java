@@ -2,6 +2,7 @@ package noppes.npcs.controllers.data;
 
 import net.minecraft.item.ItemStack;
 import net.minecraft.nbt.NBTTagCompound;
+import noppes.npcs.NoppesUtilServer;
 import noppes.npcs.api.handler.data.IAuctionListing;
 import noppes.npcs.api.item.IItemStack;
 import noppes.npcs.config.ConfigMarket;
@@ -24,6 +25,7 @@ public class AuctionListing implements IAuctionListing {
     public long createdTime;
     public long endTime;
     public EnumAuctionStatus status;
+    public boolean isGlobalListing;
 
     public AuctionListing() {
         this.id = UUID.randomUUID().toString();
@@ -31,6 +33,7 @@ public class AuctionListing implements IAuctionListing {
         this.bidCount = 0;
         this.currentBid = 0;
         this.createdTime = System.currentTimeMillis();
+        this.isGlobalListing = false;
     }
 
     public AuctionListing(UUID sellerUUID, String sellerName, ItemStack item, long startingPrice, long buyoutPrice, long durationMs) {
@@ -212,9 +215,7 @@ public class AuctionListing implements IAuctionListing {
         compound.setString("SellerName", sellerName != null ? sellerName : "");
 
         if (item != null) {
-            NBTTagCompound itemTag = new NBTTagCompound();
-            item.writeToNBT(itemTag);
-            compound.setTag("Item", itemTag);
+            compound.setTag("Item", NoppesUtilServer.writeItem(item, new NBTTagCompound()));
         }
 
         compound.setLong("StartingPrice", startingPrice);
@@ -228,6 +229,7 @@ public class AuctionListing implements IAuctionListing {
         compound.setLong("CreatedTime", createdTime);
         compound.setLong("EndTime", endTime);
         compound.setInteger("Status", status.ordinal());
+        compound.setBoolean("IsGlobalListing", isGlobalListing);
 
         return compound;
     }
@@ -240,7 +242,7 @@ public class AuctionListing implements IAuctionListing {
         sellerName = compound.getString("SellerName");
 
         if (compound.hasKey("Item")) {
-            item = ItemStack.loadItemStackFromNBT(compound.getCompoundTag("Item"));
+            item = NoppesUtilServer.readItem(compound.getCompoundTag("Item"));
         }
 
         startingPrice = compound.getLong("StartingPrice");
@@ -255,6 +257,7 @@ public class AuctionListing implements IAuctionListing {
         createdTime = compound.getLong("CreatedTime");
         endTime = compound.getLong("EndTime");
         status = EnumAuctionStatus.fromOrdinal(compound.getInteger("Status"));
+        isGlobalListing = compound.getBoolean("IsGlobalListing");
     }
 
     public static AuctionListing fromNBT(NBTTagCompound compound) {

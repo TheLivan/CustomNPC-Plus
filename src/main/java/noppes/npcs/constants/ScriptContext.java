@@ -1,17 +1,24 @@
 package noppes.npcs.constants;
 
+import noppes.npcs.api.event.IAbilityEvent;
 import noppes.npcs.api.event.IAnimationEvent;
+import noppes.npcs.api.event.IAuctionEvent;
 import noppes.npcs.api.event.IBlockEvent;
 import noppes.npcs.api.event.ICustomGuiEvent;
 import noppes.npcs.api.event.IDialogEvent;
+import noppes.npcs.api.event.IEnergyBarrierEvent;
+import noppes.npcs.api.event.IEnergyProjectileEvent;
 import noppes.npcs.api.event.IFactionEvent;
 import noppes.npcs.api.event.IForgeEvent;
 import noppes.npcs.api.event.IItemEvent;
+import noppes.npcs.api.event.ILinkedItemEvent;
 import noppes.npcs.api.event.INpcEvent;
 import noppes.npcs.api.event.IPartyEvent;
+import noppes.npcs.api.event.IChainEvent;
 import noppes.npcs.api.event.IPlayerEvent;
 import noppes.npcs.api.event.IProjectileEvent;
 import noppes.npcs.api.event.IQuestEvent;
+import noppes.npcs.api.event.IRecipeEvent;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -52,7 +59,12 @@ public class ScriptContext {
 
     public static final ScriptContext NPC = register("NPC", "npc",
         INpcEvent.class,
-        IProjectileEvent.class
+        IProjectileEvent.class,
+        IEnergyProjectileEvent.class,
+        IEnergyBarrierEvent.class,
+        IAbilityEvent.class,
+        IChainEvent.class,
+        IAnimationEvent.class
     );
 
     public static final ScriptContext PLAYER = register("PLAYER", "player",
@@ -62,7 +74,12 @@ public class ScriptContext {
         IDialogEvent.class,
         IQuestEvent.class,
         IFactionEvent.class,
-        ICustomGuiEvent.class
+        ICustomGuiEvent.class,
+        IEnergyProjectileEvent.class,
+        IEnergyBarrierEvent.class,
+        IAbilityEvent.class,
+        IChainEvent.class,
+        IAuctionEvent.class
     );
 
     public static final ScriptContext BLOCK = register("BLOCK", "block",
@@ -78,15 +95,24 @@ public class ScriptContext {
     );
 
     public static final ScriptContext LINKED_ITEM = register("LINKED_ITEM", "linked_item",
+        ILinkedItemEvent.class,
         IItemEvent.class
     );
 
     public static final ScriptContext RECIPE = register("RECIPE", "recipe",
-        "Recipe"
+        IRecipeEvent.class
     );
 
     public static final ScriptContext EFFECT = register("EFFECT", "effect",
-        "Effect"
+        IPlayerEvent.class
+    );
+
+    public static final ScriptContext ABILITY = register("ABILITY", "ability",
+        IAbilityEvent.class
+    );
+
+    public static final ScriptContext CHAINED_ABILITY = register("CHAINED_ABILITY", "chained_ability",
+        IChainEvent.class
     );
 
     public static final ScriptContext GLOBAL = register("GLOBAL", "",
@@ -110,6 +136,12 @@ public class ScriptContext {
      */
     private final List<String> namespaces;
 
+    /**
+     * Fully qualified names of the event interface classes this context supports.
+     * Only populated when registered via the Class<?> overload.
+     */
+    private final List<String> namespaceFQNs = new ArrayList<>();
+
     // ==================== CONSTRUCTOR ====================
 
     private ScriptContext(String id, String hookContext, String... namespaces) {
@@ -127,6 +159,16 @@ public class ScriptContext {
      */
     public List<String> getNamespaces() {
         return Collections.unmodifiableList(namespaces);
+    }
+
+    /**
+     * Get the fully qualified names of event interface classes this context supports.
+     * Only populated for contexts registered with Class<?> references.
+     *
+     * @return Unmodifiable list of FQN strings (e.g., "noppes.npcs.api.event.INpcEvent")
+     */
+    public List<String> getNamespaceFQNs() {
+        return Collections.unmodifiableList(namespaceFQNs);
     }
 
     /**
@@ -194,7 +236,11 @@ public class ScriptContext {
         for (int i = 0; i < eventClasses.length; i++) {
             namespaces[i] = eventClasses[i].getSimpleName();
         }
-        return register(id, hookContext, namespaces);
+        ScriptContext context = register(id, hookContext, namespaces);
+        for (Class<?> clazz : eventClasses) {
+            context.namespaceFQNs.add(clazz.getName().replace('$', '.'));
+        }
+        return context;
     }
 
     /**

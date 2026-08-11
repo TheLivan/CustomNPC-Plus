@@ -1,7 +1,12 @@
 package noppes.npcs.items;
 
-import kamkeel.npcs.controllers.data.ability.AnchorPoint;
-import kamkeel.npcs.controllers.data.ability.data.*;
+import kamkeel.npcs.controllers.data.ability.enums.AnchorPoint;
+import kamkeel.npcs.controllers.data.ability.data.energy.EnergyAnchorData;
+import kamkeel.npcs.controllers.data.ability.data.energy.EnergyCombatData;
+import kamkeel.npcs.controllers.data.ability.data.energy.EnergyDisplayData;
+import kamkeel.npcs.controllers.data.ability.data.energy.EnergyHomingData;
+import kamkeel.npcs.controllers.data.ability.data.energy.EnergyLifespanData;
+import kamkeel.npcs.controllers.data.ability.data.energy.EnergyLightningData;
 import kamkeel.npcs.entity.EntityAbilityOrb;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityLivingBase;
@@ -22,7 +27,7 @@ import noppes.npcs.entity.EntityProjectile;
 import noppes.npcs.util.IProjectileCallback;
 import org.lwjgl.opengl.GL11;
 
-import java.awt.*;
+import java.awt.Color;
 
 public class ItemStaff extends ItemNpcInterface implements IProjectileCallback {
 
@@ -33,7 +38,8 @@ public class ItemStaff extends ItemNpcInterface implements IProjectileCallback {
     public ItemStaff(int par1, EnumNpcToolMaterial material) {
         super(par1);
         this.material = material;
-        this.color = OrbColor.get(material.ordinal());;
+        this.color = OrbColor.get(material.ordinal());
+        ;
         setCreativeTab(CustomItems.tabWeapon);
     }
 
@@ -59,6 +65,11 @@ public class ItemStaff extends ItemNpcInterface implements IProjectileCallback {
 
         EntityAbilityOrb orb = (EntityAbilityOrb) entity;
 
+        if (orb.getChargeProgress() < 1.0f) {
+            orb.setDead();
+            return;
+        }
+
         orb.startMoving(null);
 
         world.playSoundAtEntity(
@@ -73,12 +84,39 @@ public class ItemStaff extends ItemNpcInterface implements IProjectileCallback {
     public void onUsingTick(ItemStack stack, EntityPlayer player, int count) {
         int tick = getMaxItemUseDuration(stack) - count;
 
+        int chargeTime = 20 + material.getHarvestLevel() * 8;
+
         if (player.worldObj.isRemote) {
             spawnParticle(stack, player);
+
+            // Reset charge tick on client to prevent client-side timeout
+            // (resetChargeTick is not synced via DataWatcher, so the client's
+            // chargeTick would keep climbing and falsely trigger CHARGE_TIMEOUT_GRACE)
+            if (tick > chargeTime && stack.stackTagCompound != null) {
+                Entity existing = player.worldObj
+                    .getEntityByID(stack.stackTagCompound.getInteger("MagicProjectile"));
+                if (existing instanceof EntityAbilityOrb) {
+                    EntityAbilityOrb orb = (EntityAbilityOrb) existing;
+                    if (orb.isCharging()) {
+                        orb.resetChargeTick();
+                    }
+                }
+            }
             return;
         }
 
-        int chargeTime = 20 + material.getHarvestLevel() * 8;
+        // Keep a fully-charged orb alive while the player is still holding
+        if (tick > chargeTime && stack.stackTagCompound != null) {
+            Entity existing = ((WorldServer) player.worldObj)
+                .getEntityByID(stack.stackTagCompound.getInteger("MagicProjectile"));
+            if (existing instanceof EntityAbilityOrb) {
+                EntityAbilityOrb orb = (EntityAbilityOrb) existing;
+                if (orb.isCharging()) {
+                    orb.resetChargeTick();
+                }
+            }
+            return;
+        }
 
         if (tick == chargeTime) {
 
@@ -110,8 +148,6 @@ public class ItemStaff extends ItemNpcInterface implements IProjectileCallback {
             EnergyLightningData lightning = new EnergyLightningData();
             EnergyLifespanData lifespan = new EnergyLifespanData(100, 72000);
             EnergyHomingData homing = new EnergyHomingData();
-            EnergyTrajectoryData trajectory = new EnergyTrajectoryData();
-
             homing.speed = 0.5f;
             homing.homingStrength = 0.35f;
             homing.homingRange = 20f;
@@ -119,11 +155,11 @@ public class ItemStaff extends ItemNpcInterface implements IProjectileCallback {
             EntityAbilityOrb orb = new EntityAbilityOrb(
                 player.worldObj, player, null,
                 player.posX, player.posY + player.getEyeHeight(), player.posZ,
-                1.0f, colorData, combat, homing, lightning, lifespan, trajectory
+                1.0f, colorData, combat, homing, lightning, lifespan
             );
 
             orb.setupCharging(
-                new EnergyAnchorData(AnchorPoint.FRONT, 0, -1, 0),
+                new EnergyAnchorData(AnchorPoint.EYE, 0, 0, 1),
                 chargeTime
             );
 

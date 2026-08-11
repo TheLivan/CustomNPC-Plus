@@ -21,6 +21,7 @@ public class SubGuiAbilitySaveConfirm extends SubGuiInterface implements ISubGui
     private final Ability ability;
     private final IAbilityConfigCallback callback;
     private final Set<String> existingNames;
+    private boolean saved = false;
 
     public SubGuiAbilitySaveConfirm(Ability ability) {
         this(ability, null, null);
@@ -68,18 +69,27 @@ public class SubGuiAbilitySaveConfirm extends SubGuiInterface implements ISubGui
     }
 
     private void doSave() {
-        PacketClient.sendClient(new CustomAbilitySavePacket(ability.writeNBT()));
+        saved = true;
+        PacketClient.sendClient(new CustomAbilitySavePacket(ability.writeNBT(false)));
         if (callback != null) {
             callback.onAbilitySaved(ability);
         }
         close();
     }
 
+    public boolean wasSaved() {
+        return saved;
+    }
+
     @Override
     public void subGuiClosed(SubGuiInterface subgui) {
         if (subgui instanceof SubGuiDuplicateNameConfirm) {
-            if (((SubGuiDuplicateNameConfirm) subgui).isConfirmed()) {
+            SubGuiDuplicateNameConfirm confirm = (SubGuiDuplicateNameConfirm) subgui;
+            if (confirm.isConfirmed()) {
                 doSave();
+            } else if (confirm.isBack()) {
+                // Keep this save-confirm dialog open.
+                return;
             } else {
                 close();
             }

@@ -21,6 +21,7 @@ import java.util.List;
 import java.util.Map;
 
 import static kamkeel.npcs.command.AbilityCommand.getPlayerAbilityNames;
+import static kamkeel.npcs.command.AbilityCommand.getPlayerChainNames;
 import static kamkeel.npcs.command.EffectCommand.getSortedEffectNames;
 
 public class CommandKamkeel extends CommandBase {
@@ -51,6 +52,7 @@ public class CommandKamkeel extends CommandBase {
             registerCommand(new AuctionCommand());
         if (ConfigMain.AttributesEnabled)
             registerCommand(new AttributeCommand());
+        registerCommand(new DebugCommand());
     }
 
     public void registerCommand(CommandKamkeelBase command) {
@@ -134,15 +136,26 @@ public class CommandKamkeel extends CommandBase {
                     List<String> keys = new ArrayList<>(RequirementCheckerRegistry.getAllKeys());
                     return CommandBase.getListOfStringsMatchingLastWord(args, keys.toArray(new String[keys.size()]));
                 } else if (usage.equals("<effectName>")) {
-                    List<String> keys = getSortedEffectNames();
+                    List<String> keys = stripColorCodes(getSortedEffectNames());
                     return CommandBase.getListOfStringsMatchingLastWord(args, keys.toArray(new String[keys.size()]));
                 } else if (usage.equals("<ability>")) {
-                    List<String> keys = getPlayerAbilityNames();
+                    List<String> keys = stripColorCodes(getPlayerAbilityNames());
+                    return CommandBase.getListOfStringsMatchingLastWord(args, keys.toArray(new String[keys.size()]));
+                } else if (usage.equals("<chain>")) {
+                    List<String> keys = stripColorCodes(getPlayerChainNames());
                     return CommandBase.getListOfStringsMatchingLastWord(args, keys.toArray(new String[keys.size()]));
                 }
             }
         }
         return command.addTabCompletionOptions(sender, Arrays.copyOfRange(args, 1, args.length));
+    }
+
+    private static List<String> stripColorCodes(List<String> list) {
+        List<String> result = new ArrayList<>(list.size());
+        for (String s : list) {
+            result.add(s.replaceAll("\u00A7[0-9a-fk-or]", ""));
+        }
+        return result;
     }
 
     public CommandKamkeelBase getCommand(String[] args) {

@@ -1,27 +1,29 @@
 package kamkeel.npcs.controllers.data.ability.type;
 
+import cpw.mods.fml.relauncher.Side;
+import cpw.mods.fml.relauncher.SideOnly;
 import kamkeel.npcs.controllers.data.ability.Ability;
-import kamkeel.npcs.controllers.data.ability.LockMovementType;
-import kamkeel.npcs.controllers.data.ability.TargetingMode;
+import kamkeel.npcs.controllers.data.ability.util.AbilityTargetHelper;
+import kamkeel.npcs.controllers.data.ability.enums.LockMode;
+import kamkeel.npcs.controllers.data.ability.enums.TargetFilter;
+import kamkeel.npcs.controllers.data.ability.enums.TargetingMode;
+import kamkeel.npcs.controllers.data.ability.gui.AbilityFieldDefs;
 import kamkeel.npcs.controllers.data.telegraph.TelegraphType;
+import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityLivingBase;
 import net.minecraft.nbt.NBTTagCompound;
 import net.minecraft.util.AxisAlignedBB;
 import net.minecraft.world.World;
-import noppes.npcs.entity.EntityNPCInterface;
-
-import noppes.npcs.client.gui.builder.FieldDef;
-import kamkeel.npcs.controllers.data.ability.gui.AbilityFieldDefs;
 import noppes.npcs.api.ability.type.IAbilityVortex;
+import noppes.npcs.client.gui.builder.FieldDef;
 
-import cpw.mods.fml.relauncher.Side;
-import cpw.mods.fml.relauncher.SideOnly;
+import net.minecraft.entity.player.EntityPlayer;
 
+import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashSet;
+import java.util.HashMap;
 import java.util.List;
-import java.util.Set;
-import java.util.UUID;
+import java.util.Map;
 
 /**
  * Vortex ability: Pulls targets toward the caster.
@@ -33,19 +35,30 @@ public class AbilityVortex extends Ability implements IAbilityVortex {
     private float pullStrength = 0.8f;
     private float damage = 0.0f;
     private float knockback = 0.0f;
-    private boolean aoe = false;
-    private int maxTargets = 5;
+    private boolean aoe = true;
     private boolean damageOnPull = false;
     private float pullDamage = 0.0f;
 
-    // Runtime state
-    private transient Set<UUID> pulledEntities;
+    // Runtime state — keyed by entity ID (not UUID, since cloned NPCs share UUIDs)
+    private transient Map<Integer, PullState> pulledEntities;
     private transient boolean pullComplete = false;
     private transient int ticksSincePullDamage = 0;
 
-    private Set<UUID> getPulledEntities() {
+    private static class PullState {
+        double lastX, lastY, lastZ;
+        int stuckTicks;
+
+        PullState(EntityLivingBase entity) {
+            this.lastX = entity.posX;
+            this.lastY = entity.posY;
+            this.lastZ = entity.posZ;
+            this.stuckTicks = 0;
+        }
+    }
+
+    private Map<Integer, PullState> getPulledEntities() {
         if (pulledEntities == null) {
-            pulledEntities = new HashSet<>();
+            pulledEntities = new HashMap<>();
         }
         return pulledEntities;
     }
@@ -55,12 +68,16 @@ public class AbilityVortex extends Ability implements IAbilityVortex {
         this.name = "Vortex";
         this.targetingMode = TargetingMode.AOE_SELF;
         this.maxRange = 15.0f;
-        this.lockMovement = LockMovementType.WINDUP_AND_ACTIVE;
+        this.lockMovement = LockMode.WINDUP_AND_ACTIVE;
         this.cooldownTicks = 0;
         this.windUpTicks = 30;
         this.telegraphType = TelegraphType.CIRCLE;
         this.windUpSound = "mob.ghast.charge";
         this.activeSound = "mob.ghast.fireball";
+        this.defaultIconLayers = new DefaultIconLayer[]{
+            new DefaultIconLayer("customnpcs:textures/gui/ability/vortex.png",
+                this::getActiveColor)
+        };
     }
 
     @Override
@@ -79,44 +96,62 @@ public class AbilityVortex extends Ability implements IAbilityVortex {
     }
 
     @Override
-    public void onExecute(EntityLivingBase caster, EntityLivingBase target, World world) {
+    public void onExecute(EntityLivingBase caster, EntityLivingBase target) {
         getPulledEntities().clear();
         pullComplete = false;
         ticksSincePullDamage = 0;
 
-        if (!isPreview()) {
-            if (aoe) {
-                AxisAlignedBB box = caster.boundingBox.expand(pullRadius, pullRadius / 2, pullRadius);
-                @SuppressWarnings("unchecked")
-                List<EntityLivingBase> entities = world.getEntitiesWithinAABB(EntityLivingBase.class, box);
+        if (!isPreview() && !caster.worldObj.isRemote) {
+            AxisAlignedBB box = caster.boundingBox.expand(pullRadius, pullRadius / 2, pullRadius);
+            @SuppressWarnings("unchecked")
+            List<EntityLivingBase> entities = caster.worldObj.getEntitiesWithinAABB(EntityLivingBase.class, box);
 
-                int count = 0;
+            if (aoe) {
+                // ALL: pull every valid enemy in range
                 for (EntityLivingBase entity : entities) {
                     if (entity == caster) continue;
                     if (entity.isDead) continue;
+                    if (!AbilityTargetHelper.shouldAffect(caster, entity, TargetFilter.ENEMIES, false)) continue;
 
                     double dist = caster.getDistanceToEntity(entity);
                     if (dist <= pullRadius) {
-                        getPulledEntities().add(entity.getUniqueID());
-                        count++;
-                        if (count >= maxTargets) break;
+                        getPulledEntities().put(entity.getEntityId(), new PullState(entity));
                     }
                 }
             } else {
-                // NPC single-target mode: pull the aggro target
-                // Player: single-target mode has no effect (no target to pull — use AOE mode instead)
+                // SINGULAR: pull one random target within range
+                // NPC: pull aggro target if valid, otherwise random enemy
+                // Player: pull random enemy in range
                 if (!isPlayerCaster(caster) && target != null && !target.isDead) {
                     double dist = caster.getDistanceToEntity(target);
                     if (dist <= pullRadius) {
-                        getPulledEntities().add(target.getUniqueID());
+                        getPulledEntities().put(target.getEntityId(), new PullState(target));
+                        return;
                     }
+                }
+
+                // Collect all valid enemies, then pick one at random
+                List<EntityLivingBase> validTargets = new ArrayList<>();
+                for (EntityLivingBase entity : entities) {
+                    if (entity == caster) continue;
+                    if (entity.isDead) continue;
+                    if (!AbilityTargetHelper.shouldAffect(caster, entity, TargetFilter.ENEMIES, false)) continue;
+
+                    double dist = caster.getDistanceToEntity(entity);
+                    if (dist <= pullRadius) {
+                        validTargets.add(entity);
+                    }
+                }
+                if (!validTargets.isEmpty()) {
+                    EntityLivingBase chosen = validTargets.get(caster.worldObj.rand.nextInt(validTargets.size()));
+                    getPulledEntities().put(chosen.getEntityId(), new PullState(chosen));
                 }
             }
         }
     }
 
     @Override
-    public void onActiveTick(EntityLivingBase caster, EntityLivingBase target, World world, int tick) {
+    public void onActiveTick(EntityLivingBase caster, EntityLivingBase target, int tick) {
         if (isPreview()) {
             // No entities to pull in preview, just run animation for a duration
             if (tick >= 60) signalCompletion();
@@ -128,17 +163,41 @@ public class AbilityVortex extends Ability implements IAbilityVortex {
             return;
         }
 
+        if (caster.worldObj.isRemote) return;
+
+        // Safety cap: force-complete if active too long
+        int maxActiveTicks = Math.max(40, (int)(pullRadius / pullStrength * 3));
+        if (tick >= maxActiveTicks) {
+            for (Map.Entry<Integer, PullState> entry : new HashMap<>(getPulledEntities()).entrySet()) {
+                EntityLivingBase entity = findEntity(caster.worldObj, entry.getKey());
+                if (entity != null && !entity.isDead) {
+                    onTargetArrived(caster, entity, caster.worldObj);
+                }
+            }
+            getPulledEntities().clear();
+            pullComplete = true;
+            signalCompletion();
+            return;
+        }
+
         double destX = caster.posX;
         double destY = caster.posY;
         double destZ = caster.posZ;
 
         boolean anyStillPulling = false;
         ticksSincePullDamage++;
+        boolean shouldDealPullDamage = damageOnPull && pullDamage > 0 && ticksSincePullDamage >= 10;
+        if (shouldDealPullDamage) {
+            ticksSincePullDamage = 0;
+        }
 
-        for (UUID uuid : new HashSet<>(getPulledEntities())) {
-            EntityLivingBase entity = findEntity(caster, world, uuid);
+        for (Map.Entry<Integer, PullState> entry : new HashMap<>(getPulledEntities()).entrySet()) {
+            int entityId = entry.getKey();
+            PullState state = entry.getValue();
+
+            EntityLivingBase entity = findEntity(caster.worldObj, entityId);
             if (entity == null || entity.isDead) {
-                getPulledEntities().remove(uuid);
+                getPulledEntities().remove(entityId);
                 continue;
             }
 
@@ -147,36 +206,64 @@ public class AbilityVortex extends Ability implements IAbilityVortex {
             double dz = destZ - entity.posZ;
             double dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
 
-            if (dist <= 1.5f) {
-                getPulledEntities().remove(uuid);
-                onTargetArrived(caster, entity, world);
+            if (dist <= 1.5) {
+                getPulledEntities().remove(entityId);
+                onTargetArrived(caster, entity, caster.worldObj);
+                continue;
+            }
+
+            // Stuck detection: check if entity made progress since last tick
+            double lastDx = destX - state.lastX;
+            double lastDy = destY - state.lastY;
+            double lastDz = destZ - state.lastZ;
+            double lastDist = Math.sqrt(lastDx * lastDx + lastDy * lastDy + lastDz * lastDz);
+            double progress = lastDist - dist; // positive = entity moved closer
+
+            double expectedProgress = Math.min(pullStrength, dist * 0.5);
+            if (progress < expectedProgress * 0.3) {
+                state.stuckTicks++;
+            } else {
+                state.stuckTicks = 0;
+            }
+
+            if (state.stuckTicks >= 5) {
+                // Entity is stuck (wall, block, partial obstruction) - treat as arrived
+                getPulledEntities().remove(entityId);
+                onTargetArrived(caster, entity, caster.worldObj);
                 continue;
             }
 
             anyStillPulling = true;
 
+            // Record position BEFORE movement so next tick's stuck detection
+            // can measure the actual progress (pull + AI movement combined)
+            state.lastX = entity.posX;
+            state.lastY = entity.posY;
+            state.lastZ = entity.posZ;
+
             // Clamp speed to never exceed half the remaining distance, preventing overshoot/slingshot
             double maxSpeed = dist * 0.5;
             double effectiveSpeed = Math.min(pullStrength, maxSpeed);
             double factor = effectiveSpeed / dist;
-            double nextX = dx * factor;
-            double nextY = dy * factor * 0.5;
-            double nextZ = dz * factor;
+            double motionX = dx * factor;
+            double motionY = dy * factor * 0.5;
+            double motionZ = dz * factor;
 
-            AxisAlignedBB nextBox = entity.boundingBox.copy().offset(nextX, nextY, nextZ);
-            if (!world.getCollidingBoundingBoxes(entity, nextBox).isEmpty()) {
-                getPulledEntities().remove(uuid);
-                continue;
+            if (entity instanceof EntityPlayer) {
+                // Players: send velocity packet — client applies movement
+                entity.motionX = motionX;
+                entity.motionY = motionY;
+                entity.motionZ = motionZ;
+                entity.velocityChanged = true;
+            } else {
+                // NPCs/mobs: directly apply movement with collision detection.
+                // Setting motionX alone is unreliable because the entity's AI tick
+                // (moveFlying/moveEntityWithHeading) can override the velocity before
+                // moveEntity runs, depending on entity tick order relative to the caster.
+                entity.moveEntity(motionX, motionY, motionZ);
             }
 
-            entity.motionX = nextX;
-            entity.motionY = nextY;
-            entity.motionZ = nextZ;
-            entity.velocityChanged = true;
-
-            if (damageOnPull && pullDamage > 0 && ticksSincePullDamage >= 10) {
-                ticksSincePullDamage = 0;
-                entity.hurtResistantTime = 0;
+            if (shouldDealPullDamage) {
                 applyAbilityDamage(caster, entity, pullDamage * 0.5f, 0);
             }
         }
@@ -198,19 +285,12 @@ public class AbilityVortex extends Ability implements IAbilityVortex {
     }
 
     /**
-     * Find an entity by UUID within the vortex pull area.
-     * Uses AABB search instead of iterating all loaded entities.
+     * Find an entity by entity ID.
      */
-    @SuppressWarnings("unchecked")
-    private EntityLivingBase findEntity(EntityLivingBase caster, World world, UUID uuid) {
-        // Search within pull radius (entities being pulled should be within this area)
-        AxisAlignedBB searchBox = caster.boundingBox.expand(pullRadius, pullRadius / 2, pullRadius);
-        List<EntityLivingBase> nearbyEntities = world.getEntitiesWithinAABB(EntityLivingBase.class, searchBox);
-
-        for (EntityLivingBase entity : nearbyEntities) {
-            if (entity.getUniqueID().equals(uuid)) {
-                return entity;
-            }
+    private EntityLivingBase findEntity(World world, int entityId) {
+        Entity entity = world.getEntityByID(entityId);
+        if (entity instanceof EntityLivingBase) {
+            return (EntityLivingBase) entity;
         }
         return null;
     }
@@ -229,21 +309,19 @@ public class AbilityVortex extends Ability implements IAbilityVortex {
         nbt.setFloat("damage", damage);
         nbt.setFloat("knockback", knockback);
         nbt.setBoolean("aoe", aoe);
-        nbt.setInteger("maxTargets", maxTargets);
         nbt.setBoolean("damageOnPull", damageOnPull);
         nbt.setFloat("pullDamage", pullDamage);
     }
 
     @Override
     public void readTypeNBT(NBTTagCompound nbt) {
-        this.pullRadius = nbt.hasKey("pullRadius") ? nbt.getFloat("pullRadius") : 8.0f;
-        this.pullStrength = nbt.hasKey("pullStrength") ? nbt.getFloat("pullStrength") : 0.8f;
-        this.damage = nbt.hasKey("damage") ? nbt.getFloat("damage") : 0.0f;
-        this.knockback = nbt.hasKey("knockback") ? nbt.getFloat("knockback") : 0.0f;
-        this.aoe = nbt.hasKey("aoe") && nbt.getBoolean("aoe");
-        this.maxTargets = nbt.hasKey("maxTargets") ? nbt.getInteger("maxTargets") : 5;
-        this.damageOnPull = nbt.hasKey("damageOnPull") && nbt.getBoolean("damageOnPull");
-        this.pullDamage = nbt.hasKey("pullDamage") ? nbt.getFloat("pullDamage") : 0.0f;
+        this.pullRadius = nbt.getFloat("pullRadius");
+        this.pullStrength = nbt.getFloat("pullStrength");
+        this.damage = nbt.getFloat("damage");
+        this.knockback = nbt.getFloat("knockback");
+        this.aoe = !nbt.hasKey("aoe") || nbt.getBoolean("aoe");
+        this.damageOnPull = nbt.getBoolean("damageOnPull");
+        this.pullDamage = nbt.getFloat("pullDamage");
     }
 
     // Getters & Setters
@@ -271,6 +349,9 @@ public class AbilityVortex extends Ability implements IAbilityVortex {
         this.damage = damage;
     }
 
+    @Override
+    public float getDisplayDamage() { return damage; }
+
     public float getKnockback() {
         return knockback;
     }
@@ -285,14 +366,6 @@ public class AbilityVortex extends Ability implements IAbilityVortex {
 
     public void setAoe(boolean aoe) {
         this.aoe = aoe;
-    }
-
-    public int getMaxTargets() {
-        return maxTargets;
-    }
-
-    public void setMaxTargets(int maxTargets) {
-        this.maxTargets = maxTargets;
     }
 
     public boolean isDamageOnPull() {
@@ -327,8 +400,6 @@ public class AbilityVortex extends Ability implements IAbilityVortex {
             FieldDef.section("ability.section.aoe"),
             FieldDef.boolField("gui.enabled", this::isAoe, this::setAoe)
                 .hover("ability.hover.aoe"),
-            FieldDef.intField("ability.maxTargets", this::getMaxTargets, this::setMaxTargets)
-                .visibleWhen(this::isAoe),
             FieldDef.section("ability.section.pullDamage"),
             FieldDef.boolField("gui.enabled", this::isDamageOnPull, this::setDamageOnPull)
                 .hover("ability.hover.dmgOnPull"),

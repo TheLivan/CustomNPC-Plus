@@ -50,7 +50,7 @@ public class GuiAuctionTrades extends GuiAuctionInterface implements IGuiData {
     private int pendingSlot = -1;
     private PendingOp pendingOp = PendingOp.NONE;
 
-    private enum PendingOp { NONE, CANCEL, CLAIM }
+    private enum PendingOp {NONE, CANCEL, CLAIM}
 
     public GuiAuctionTrades(EntityNPCInterface npc, ContainerAuctionTrades container) {
         super(npc, container);
@@ -88,10 +88,16 @@ public class GuiAuctionTrades extends GuiAuctionInterface implements IGuiData {
         AuctionListing listing = tradesContainer.getListingAt(slot);
         AuctionClaim claim = tradesContainer.getClaimAt(slot);
 
-        if (listing != null && tradesContainer.isSellingAt(slot) && mouseButton == 1) {
-            // Right-click on own listing = show cancel
-            setPending(slot, PendingOp.CANCEL);
-            NoppesUtil.clickSound();
+        if (listing != null && tradesContainer.isSellingAt(slot)) {
+            if (mouseButton == 0) {
+                // Left-click on own listing = view details
+                AuctionActionPacket.openBidding(listing.id);
+                NoppesUtil.clickSound();
+            } else if (mouseButton == 1) {
+                // Right-click on own listing = show cancel
+                setPending(slot, PendingOp.CANCEL);
+                NoppesUtil.clickSound();
+            }
         } else if (listing != null && tradesContainer.isBiddingAt(slot) && mouseButton == 0) {
             // Left-click on active bid = open bidding GUI to increase bid
             AuctionActionPacket.openBidding(listing.id);
@@ -117,7 +123,9 @@ public class GuiAuctionTrades extends GuiAuctionInterface implements IGuiData {
         }
     }
 
-    /** Handle click on pending operation slot */
+    /**
+     * Handle click on pending operation slot
+     */
     private void handlePendingClick(int mouseButton) {
         if (pendingOp == PendingOp.CANCEL && mouseButton == 1) {
             // Right-click confirms cancel
@@ -159,14 +167,18 @@ public class GuiAuctionTrades extends GuiAuctionInterface implements IGuiData {
         }
     }
 
-    /** Set pending operation and hide slot item */
+    /**
+     * Set pending operation and hide slot item
+     */
     private void setPending(int slot, PendingOp op) {
         pendingSlot = slot;
         pendingOp = op;
         tradesContainer.setHiddenSlot(slot);
     }
 
-    /** Clear pending operation and restore slot */
+    /**
+     * Clear pending operation and restore slot
+     */
     private void clearPending() {
         if (pendingSlot >= 0) {
             tradesContainer.clearHiddenSlot();
@@ -175,13 +187,17 @@ public class GuiAuctionTrades extends GuiAuctionInterface implements IGuiData {
         pendingOp = PendingOp.NONE;
     }
 
-    /** Play confirmation sound */
+    /**
+     * Play confirmation sound
+     */
     private void playConfirmSound() {
         mc.getSoundHandler().playSound(PositionedSoundRecord.func_147674_a(
             new ResourceLocation("random.orb"), 1.0F));
     }
 
-    /** Get slot index at mouse position */
+    /**
+     * Get slot index at mouse position
+     */
     private int getSlotAt(int mouseX, int mouseY) {
         int relX = mouseX - guiLeft - GRID_X;
         int relY = mouseY - guiTop - GRID_Y;
@@ -239,7 +255,9 @@ public class GuiAuctionTrades extends GuiAuctionInterface implements IGuiData {
         }
     }
 
-    /** Get tint color for slot based on contents */
+    /**
+     * Get tint color for slot based on contents
+     */
     private int getSlotTint(int slot) {
         AuctionListing listing = tradesContainer.getListingAt(slot);
         AuctionClaim claim = tradesContainer.getClaimAt(slot);
@@ -281,7 +299,9 @@ public class GuiAuctionTrades extends GuiAuctionInterface implements IGuiData {
         }
     }
 
-    /** Draw tooltip for a trade slot */
+    /**
+     * Draw tooltip for a trade slot
+     */
     private void drawTradeTooltip(int slot, int x, int y) {
         List<String> tooltip = new ArrayList<>();
 
@@ -301,16 +321,13 @@ public class GuiAuctionTrades extends GuiAuctionInterface implements IGuiData {
             AuctionListing listing = tradesContainer.getListingAt(slot);
             AuctionClaim claim = tradesContainer.getClaimAt(slot);
 
-            if (listing != null) {
-                if (tradesContainer.isSellingAt(slot)) {
-                    tooltip.add(EnumChatFormatting.GOLD + StatCollector.translateToLocal("auction.trades.activeListing"));
-                    tooltip.add(EnumChatFormatting.YELLOW + StatCollector.translateToLocal("auction.trades.rightClickToCancel"));
-                } else if (tradesContainer.isBiddingAt(slot)) {
-                    tooltip.add(EnumChatFormatting.AQUA + StatCollector.translateToLocal("auction.trades.activeBid"));
-                    tooltip.add(EnumChatFormatting.GRAY + StatCollector.translateToLocal("auction.trades.winningBid"));
-                    tooltip.add(EnumChatFormatting.YELLOW + StatCollector.translateToLocal("auction.trades.leftClickToIncrease"));
-                }
-            } else if (claim != null) {
+            // Slots with items have tooltips handled by AuctionTooltipHandler via ItemTooltipEvent
+            if (listing != null) return;
+            if (claim != null && (claim.type == EnumClaimType.ITEM ||
+                (claim.type == EnumClaimType.REFUND && claim.item != null))) return;
+
+            // Non-item slots (currency claims, refund without item, unavailable)
+            if (claim != null) {
                 switch (claim.type) {
                     case CURRENCY:
                         tooltip.add(EnumChatFormatting.GREEN + StatCollector.translateToLocal("auction.trades.soldClaim"));
@@ -328,20 +345,6 @@ public class GuiAuctionTrades extends GuiAuctionInterface implements IGuiData {
                             tooltip.add(EnumChatFormatting.GRAY + StatCollector.translateToLocal("auction.trades.outbidBy") + ": " + EnumChatFormatting.AQUA + claim.otherPlayerName);
                         }
                         tooltip.add(EnumChatFormatting.GOLD + String.format("%,d", claim.currency) + " " + AuctionClientConfig.getCurrencyName());
-                        // Show rebid option if item is present (active listing)
-                        if (claim.item != null) {
-                            tooltip.add("");
-                            tooltip.add(EnumChatFormatting.GREEN + StatCollector.translateToLocal("auction.trades.leftClickRebid"));
-                            tooltip.add(EnumChatFormatting.YELLOW + StatCollector.translateToLocal("auction.trades.rightClickRefund"));
-                            return; // Skip the generic claim message
-                        }
-                        break;
-                    case ITEM:
-                        if (claim.isReturned) {
-                            tooltip.add(EnumChatFormatting.RED + StatCollector.translateToLocal("auction.trades.expiredClaim"));
-                        } else {
-                            tooltip.add(EnumChatFormatting.GREEN + StatCollector.translateToLocal("auction.trades.wonClaim"));
-                        }
                         break;
                 }
                 tooltip.add(EnumChatFormatting.YELLOW + StatCollector.translateToLocal("auction.trades.leftClickToClaim"));

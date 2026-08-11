@@ -69,13 +69,32 @@ public class GuiFieldBuilder {
     // CONFIG CHAINING
     // ═══════════════════════════════════════════════════════════════════
 
-    public GuiFieldBuilder scrollWindowId(int id) { this.scrollWindowId = id; return this; }
-    public GuiFieldBuilder contentRight(int v) { this.contentRight = v; return this; }
-    public GuiFieldBuilder startIds(int widget, int clear, int label) {
-        this.widgetId = widget; this.clearId = clear; this.labelId = label; return this;
+    public GuiFieldBuilder scrollWindowId(int id) {
+        this.scrollWindowId = id;
+        return this;
     }
-    public GuiFieldBuilder startY(int y) { this.startY = y; return this; }
-    public GuiFieldBuilder rowHeight(int h) { this.rowHeight = h; return this; }
+
+    public GuiFieldBuilder contentRight(int v) {
+        this.contentRight = v;
+        return this;
+    }
+
+    public GuiFieldBuilder startIds(int widget, int clear, int label) {
+        this.widgetId = widget;
+        this.clearId = clear;
+        this.labelId = label;
+        return this;
+    }
+
+    public GuiFieldBuilder startY(int y) {
+        this.startY = y;
+        return this;
+    }
+
+    public GuiFieldBuilder rowHeight(int h) {
+        this.rowHeight = h;
+        return this;
+    }
 
     // ═══════════════════════════════════════════════════════════════════
     // BUILD
@@ -98,6 +117,7 @@ public class GuiFieldBuilder {
 
     /**
      * Processes all fields and adds widgets to the scroll window.
+     *
      * @return the final Y position after all fields
      */
     protected int build(List<FieldDef> fields) {
@@ -173,8 +193,14 @@ public class GuiFieldBuilder {
     }
 
     private int lastHandledIndex = -1;
-    protected void setLastHandledIndex(int index) { this.lastHandledIndex = index; }
-    protected int getLastHandledIndex() { return lastHandledIndex; }
+
+    protected void setLastHandledIndex(int index) {
+        this.lastHandledIndex = index;
+    }
+
+    protected int getLastHandledIndex() {
+        return lastHandledIndex;
+    }
 
     // ═══════════════════════════════════════════════════════════════════
     // FIELD RENDERING
@@ -194,7 +220,7 @@ public class GuiFieldBuilder {
                 float fVal = def.getValue() instanceof Number ? ((Number) def.getValue()).floatValue() : 0f;
                 GuiNpcTextField tf = new GuiNpcTextField(widgetId, parent, fontRenderer, fieldX, y, fieldW, 20, String.valueOf(fVal));
                 tf.setFloatsOnly();
-                if (def.hasRange()) tf.setMinMaxDefaultFloat(def.getMin(), def.getMax(), fVal);
+                tf.setMinMaxDefaultFloat(def.getMin(), def.getMax(), fVal);
                 if (!def.isEnabled()) tf.setEnabled(false);
                 if (hover != null) tf.setHoverText(hover);
                 sw.addTextField(tf);
@@ -207,7 +233,7 @@ public class GuiFieldBuilder {
                 int iVal = def.getValue() instanceof Number ? ((Number) def.getValue()).intValue() : 0;
                 GuiNpcTextField tf = new GuiNpcTextField(widgetId, parent, fontRenderer, fieldX, y, fieldW, 20, String.valueOf(iVal));
                 tf.setIntegersOnly();
-                if (def.hasRange()) tf.setMinMaxDefault((int) def.getMin(), (int) def.getMax(), iVal);
+                tf.setMinMaxDefault((int) def.getMin(), (int) def.getMax(), iVal);
                 if (!def.isEnabled()) tf.setEnabled(false);
                 if (hover != null) tf.setHoverText(hover);
                 sw.addTextField(tf);
@@ -219,6 +245,9 @@ public class GuiFieldBuilder {
             case STRING: {
                 String sVal = def.getValue() != null ? def.getValue().toString() : "";
                 GuiNpcTextField tf = new GuiNpcTextField(widgetId, parent, fontRenderer, fieldX, y, fieldW, 20, sVal);
+                if ("gui.name".equals(def.getLabel())) {
+                    tf.setFileNameSafe();
+                }
                 if (!def.isEnabled()) tf.setEnabled(false);
                 if (hover != null) tf.setHoverText(hover);
                 sw.addTextField(tf);
@@ -268,7 +297,10 @@ public class GuiFieldBuilder {
                     String curVal = def.getStringEnumValue();
                     int selected = 0;
                     for (int i = 0; i < values.length; i++) {
-                        if (values[i].equals(curVal)) { selected = i; break; }
+                        if (values[i].equals(curVal)) {
+                            selected = i;
+                            break;
+                        }
                     }
                     GuiNpcButton btn = new GuiNpcButton(widgetId, fieldX, y, fieldW, 20, values, selected);
                     if (!def.isEnabled()) btn.setEnabled(false);
@@ -284,12 +316,12 @@ public class GuiFieldBuilder {
                 String btnText = def.getButtonLabel();
                 int btnW;
                 if (def.hasClearAction()) {
-                    btnW = contentRight - 22 - fieldX;
-                    GuiNpcButton clearBtn = new GuiNpcButton(clearId, contentRight - 20, y, 20, 20, "X");
+                    btnW = fieldW - 22;
+                    GuiNpcButton clearBtn = new GuiNpcButton(clearId, fieldX + fieldW - 20, y, 20, 20, "X");
                     sw.addButton(clearBtn);
                     clearFieldMap.put(clearId, def);
                 } else {
-                    btnW = contentRight - fieldX;
+                    btnW = fieldW;
                 }
                 GuiNpcButton btn = new GuiNpcButton(widgetId, fieldX, y, btnW, 20, btnText);
                 Integer textColor = def.getButtonTextColor();
@@ -299,6 +331,25 @@ public class GuiFieldBuilder {
                 sw.addButton(btn);
                 buttonFieldMap.put(widgetId, def);
                 widgetId++;
+                clearId++;
+                break;
+            }
+            case STRING_BROWSE: {
+                // Text field for manual input (URLs, paths) + browse button
+                int btnW = 20;
+                int tfW = fieldW - btnW - 2;
+                String sVal = def.getValue() != null ? def.getValue().toString() : "";
+                GuiNpcTextField tf = new GuiNpcTextField(widgetId, parent, fontRenderer, fieldX, y, tfW, 20, sVal);
+                if (!def.isEnabled()) tf.setEnabled(false);
+                if (hover != null) tf.setHoverText(hover);
+                sw.addTextField(tf);
+                textFieldMap.put(widgetId, def);
+                widgetId++;
+                // Browse button
+                GuiNpcButton browseBtn = new GuiNpcButton(clearId, fieldX + tfW + 2, y, btnW, 20, "...");
+                if (!def.isEnabled()) browseBtn.setEnabled(false);
+                sw.addButton(browseBtn);
+                buttonFieldMap.put(clearId, def);
                 clearId++;
                 break;
             }
@@ -315,20 +366,37 @@ public class GuiFieldBuilder {
         String translated = StatCollector.translateToLocal(def.getLabel());
         int labelW = fontRenderer.getStringWidth(translated);
         int fieldX = colLLabel + labelW + labelPadding;
+        // Available width before the scrollbar
+        int maxW = contentRight - fieldX - 15;
+        if ((def.getType() == FieldType.SUB_GUI || def.getType() == FieldType.STRING_BROWSE) && maxW > 0) {
+            // SUB_GUI fields fill all available width up to the scrollbar
+            fieldW = maxW;
+        } else if (maxW > 0 && fieldW > maxW) {
+            fieldW = maxW;
+        }
         renderFieldAt(def, colLLabel, fieldX, fieldW, y);
     }
 
     protected int getFullFieldWidth(FieldDef def) {
         switch (def.getType()) {
             case FLOAT:
-            case INT:         return 60;
-            case STRING:      return 200;
-            case BOOLEAN:     return 50;
-            case LABEL:       return 60;
+            case INT:
+                return 60;
+            case STRING:
+                return 200;
+            case BOOLEAN:
+                return 50;
+            case LABEL:
+                return 60;
             case ENUM:
-            case STRING_ENUM: return 120;
-            case SUB_GUI:     return def.hasClearAction() ? 175 : 200;
-            default:          return 80;
+            case STRING_ENUM:
+                return 120;
+            case SUB_GUI:
+                return def.hasClearAction() ? 175 : 200;
+            case STRING_BROWSE:
+                return 200;
+            default:
+                return 80;
         }
     }
 
@@ -387,6 +455,15 @@ public class GuiFieldBuilder {
                     });
                 }
                 return true;
+            case STRING_BROWSE:
+                if (def.getSubGuiFactory() != null) {
+                    parent.setSubGuiWithResult(def.getSubGuiFactory().get(), sub -> {
+                        if (def.getSubGuiResultHandler() != null) {
+                            def.getSubGuiResultHandler().accept(sub);
+                        }
+                    });
+                }
+                return true;
             default:
                 return false;
         }
@@ -410,7 +487,8 @@ public class GuiFieldBuilder {
                         def.setValue(newVal);
                         return true;
                     }
-                } catch (NumberFormatException ignored) {}
+                } catch (NumberFormatException ignored) {
+                }
                 return false;
             case INT:
                 try {
@@ -421,9 +499,11 @@ public class GuiFieldBuilder {
                         def.setValue(newVal);
                         return true;
                     }
-                } catch (NumberFormatException ignored) {}
+                } catch (NumberFormatException ignored) {
+                }
                 return false;
             case STRING:
+            case STRING_BROWSE:
                 String newVal = field.getText();
                 Object old = def.getValue();
                 String oldVal = old != null ? old.toString() : "";
@@ -453,10 +533,27 @@ public class GuiFieldBuilder {
     // GETTERS
     // ═══════════════════════════════════════════════════════════════════
 
-    public Map<Integer, FieldDef> getButtonFieldMap() { return buttonFieldMap; }
-    public Map<Integer, FieldDef> getTextFieldMap() { return textFieldMap; }
-    public Map<Integer, FieldDef> getClearFieldMap() { return clearFieldMap; }
-    public GuiScrollWindow getScrollWindow() { return sw; }
-    public int getLastBuildY() { return lastBuildY; }
-    public int getNextLabelId() { return labelId; }
+    public Map<Integer, FieldDef> getButtonFieldMap() {
+        return buttonFieldMap;
+    }
+
+    public Map<Integer, FieldDef> getTextFieldMap() {
+        return textFieldMap;
+    }
+
+    public Map<Integer, FieldDef> getClearFieldMap() {
+        return clearFieldMap;
+    }
+
+    public GuiScrollWindow getScrollWindow() {
+        return sw;
+    }
+
+    public int getLastBuildY() {
+        return lastBuildY;
+    }
+
+    public int getNextLabelId() {
+        return labelId;
+    }
 }

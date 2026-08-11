@@ -1,8 +1,8 @@
 package noppes.npcs.scripted.wrapper;
 
+import kamkeel.npcs.controllers.AbilityController;
 import kamkeel.npcs.controllers.data.ability.Ability;
-import kamkeel.npcs.controllers.data.ability.AbilityController;
-import kamkeel.npcs.controllers.data.ability.AbilitySlot;
+import kamkeel.npcs.controllers.data.ability.AbilityAction;
 import net.minecraft.entity.EntityLivingBase;
 import noppes.npcs.DataAbilities;
 import noppes.npcs.api.ability.IAbility;
@@ -36,7 +36,12 @@ public class ScriptDataAbilities implements IDataAbilities {
 
     @Override
     public IAbility[] getAbilities() {
-        return data.getAbilities().toArray(new IAbility[0]);
+        List<Ability> live = data.getAbilities();
+        IAbility[] copies = new IAbility[live.size()];
+        for (int i = 0; i < live.size(); i++) {
+            copies[i] = live.get(i).deepCopy();
+        }
+        return copies;
     }
 
     @Override
@@ -53,15 +58,17 @@ public class ScriptDataAbilities implements IDataAbilities {
 
     @Override
     public void addAbilityReference(String key) {
-        // Validate ability exists and allows NPCs
-        Ability ability = AbilityController.Instance.resolveAbility(key);
+        // Validate ability exists and allows NPCs (peek avoids deep copy)
+        Ability ability = AbilityController.Instance.peekAbility(key);
         if (ability == null) {
             return; // Ability doesn't exist
         }
         if (!ability.getAllowedBy().allowsNpc()) {
             return; // Ability is PLAYER_ONLY
         }
-        data.addAbilityReference(key);
+        // Store by UUID/registry key for stable reference
+        String canonicalKey = ability.getId() != null ? ability.getId() : key;
+        data.addAbilityReference(canonicalKey);
     }
 
     @Override
@@ -71,7 +78,8 @@ public class ScriptDataAbilities implements IDataAbilities {
 
     @Override
     public IAbility getAbility(String abilityId) {
-        return data.getAbility(abilityId);
+        Ability a = data.getAbility(abilityId);
+        return a != null ? a.deepCopy() : null;
     }
 
     @Override
@@ -81,14 +89,14 @@ public class ScriptDataAbilities implements IDataAbilities {
 
     @Override
     public boolean isAbilityReference(String abilityId) {
-        List<AbilitySlot> slots = data.getAbilitySlots();
+        List<AbilityAction> slots = data.getAbilityActions();
         for (int i = 0; i < slots.size(); i++) {
-            kamkeel.npcs.controllers.data.ability.AbilitySlot slot = slots.get(i);
-            if (slot.isReference()) {
+            AbilityAction slot = slots.get(i);
+            if (slot.isAbilityReference()) {
                 if (slot.getReferenceId().equals(abilityId)) return true;
-            } else {
+            } else if (!slot.isReference()) {
                 Ability a = slot.getAbility();
-                if (a != null && a.getId().equals(abilityId)) return false;
+                if (a != null && abilityId.equals(a.getId())) return false;
             }
         }
         return false;
@@ -96,10 +104,10 @@ public class ScriptDataAbilities implements IDataAbilities {
 
     @Override
     public boolean convertToInline(String abilityId) {
-        List<kamkeel.npcs.controllers.data.ability.AbilitySlot> slots = data.getAbilitySlots();
+        List<AbilityAction> slots = data.getAbilityActions();
         for (int i = 0; i < slots.size(); i++) {
-            kamkeel.npcs.controllers.data.ability.AbilitySlot slot = slots.get(i);
-            if (slot.isReference() && slot.getReferenceId().equals(abilityId)) {
+            AbilityAction slot = slots.get(i);
+            if (slot.isAbilityReference() && slot.getReferenceId().equals(abilityId)) {
                 return data.convertToInline(i);
             }
         }
@@ -113,6 +121,17 @@ public class ScriptDataAbilities implements IDataAbilities {
 
     @Override
     public IAbility getCurrentAbility() {
+        Ability a = data.getCurrentAbility();
+        return a != null ? a.deepCopy() : null;
+    }
+
+    @Override
+    public IAbility getSourceAbility(String abilityId) {
+        return data.getAbility(abilityId);
+    }
+
+    @Override
+    public IAbility getSourceCurrentAbility() {
         return data.getCurrentAbility();
     }
 
@@ -127,16 +146,22 @@ public class ScriptDataAbilities implements IDataAbilities {
     }
 
     @Override
+    public void completeCurrentAbility() {
+        data.completeCurrentAbility();
+    }
+
+    @Override
     public int getGlobalCooldown() {
         return (int) data.getRemainingCooldown();
     }
 
     @Override
     public void setGlobalCooldown(int ticks) {
-        // Set the cooldown by manipulating the internal cooldown end time
-        // Not directly exposed, but we can reset and let it tick down
-        data.resetCooldown();
-        // This is a best-effort implementation
+        if (ticks <= 0) {
+            data.resetCooldown();
+        } else {
+            data.setCooldownEndTime(npc.worldObj.getTotalWorldTime() + ticks);
+        }
     }
 
     @Override
@@ -171,8 +196,8 @@ public class ScriptDataAbilities implements IDataAbilities {
 
     @Override
     public boolean executeAbility(String key, Object target) {
-        // Validate ability exists and allows NPCs
-        Ability ability = AbilityController.Instance.resolveAbility(key);
+        // Validate ability exists and allows NPCs (peek avoids deep copy)
+        Ability ability = AbilityController.Instance.peekAbility(key);
         if (ability == null) {
             return false; // Ability doesn't exist
         }

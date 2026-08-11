@@ -5,6 +5,7 @@ import kamkeel.npcs.network.packets.request.linked.LinkedGetAllPacket;
 import kamkeel.npcs.network.packets.request.linked.LinkedGetPacket;
 import kamkeel.npcs.network.packets.request.linked.LinkedItemBuildPacket;
 import kamkeel.npcs.network.packets.request.linked.LinkedItemRemovePacket;
+import kamkeel.npcs.network.packets.request.linked.LinkedItemClonePacket;
 import kamkeel.npcs.network.packets.request.linked.LinkedItemSavePacket;
 import kamkeel.npcs.network.packets.request.linked.LinkedNPCAddPacket;
 import kamkeel.npcs.network.packets.request.linked.LinkedNPCRemovePacket;
@@ -85,6 +86,15 @@ public class GuiNPCManageLinked extends GuiNPCInterface2 implements IScrollData,
         super.initGui();
 
         int y = guiTop + 8;
+
+        // Fullscreen button - FIRST (only for Items tab)
+        if (tab == 1) {
+            GuiNpcButton fullBtn = new GuiNpcButton(66, guiLeft + 368, y, 45, 20, "gui.fullscreen");
+            fullBtn.setTextColor(0x55FF55);
+            fullBtn.setHoverText("gui.fullscreen.tooltip");
+            this.addButton(fullBtn);
+            y += 22;
+        }
 
         this.addButton(new GuiNpcButton(10, guiLeft + 368, y, 45, 20, "gui.npcs"));
         this.addButton(new GuiNpcButton(11, guiLeft + 368, y += 22, 45, 20, "gui.items"));
@@ -216,6 +226,7 @@ public class GuiNPCManageLinked extends GuiNPCInterface2 implements IScrollData,
     }
 
     private List<String> getSearchList() {
+        if (data == null) return new ArrayList<String>();
         if (search.isEmpty()) {
             return new ArrayList<String>(this.data.keySet());
         }
@@ -265,6 +276,11 @@ public class GuiNPCManageLinked extends GuiNPCInterface2 implements IScrollData,
             scroll.setSelected("");
         }
 
+        if (button.id == 66) {
+            mc.displayGuiScreen(new GuiLinkedItemDirectory(npc));
+            return;
+        }
+
         if (linkedItem == null)
             return;
 
@@ -273,13 +289,7 @@ public class GuiNPCManageLinked extends GuiNPCInterface2 implements IScrollData,
         }
         if (button.id == 4) {
             if (data.containsKey(scroll.getSelected()) && linkedItem != null && linkedItem.id >= 0) {
-                String name = linkedItem.name;
-                while (data.containsKey(name))
-                    name += "_";
-                LinkedItem linkedItemClone = this.linkedItem.clone();
-                linkedItemClone.name = name;
-                linkedItemClone.id = -1;
-                PacketClient.sendClient(new LinkedItemSavePacket(linkedItemClone.writeToNBT(false), ""));
+                PacketClient.sendClient(new LinkedItemClonePacket(this.linkedItem.id));
             }
         }
         if (button.id == 5) {

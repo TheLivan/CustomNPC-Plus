@@ -2,20 +2,14 @@ package kamkeel.npcs.controllers.data.ability.type;
 
 import cpw.mods.fml.relauncher.Side;
 import cpw.mods.fml.relauncher.SideOnly;
-import kamkeel.npcs.controllers.data.ability.Ability;
-import kamkeel.npcs.controllers.data.ability.LockMovementType;
-import kamkeel.npcs.controllers.data.ability.TargetingMode;
+import kamkeel.npcs.controllers.data.ability.enums.LockMode;
+import kamkeel.npcs.controllers.data.ability.enums.TargetingMode;
 import kamkeel.npcs.controllers.data.telegraph.TelegraphType;
 import net.minecraft.entity.EntityLivingBase;
 import net.minecraft.nbt.NBTTagCompound;
-import net.minecraft.util.AxisAlignedBB;
 import net.minecraft.util.DamageSource;
-import net.minecraft.util.Vec3;
-import net.minecraft.world.World;
-import noppes.npcs.entity.EntityNPCInterface;
-
-import noppes.npcs.client.gui.builder.FieldDef;
 import noppes.npcs.api.ability.type.IAbilityDash;
+import noppes.npcs.client.gui.builder.FieldDef;
 
 import java.util.Arrays;
 import java.util.List;
@@ -23,23 +17,29 @@ import java.util.Random;
 
 /**
  * Dash ability: Quick evasive sidestep with NO telegraph.
- * Defensive repositioning move to evade attacks.
+ * Extends AbilityMovement for shared direction locking, stall detection, and velocity application.
  */
-public class AbilityDash extends Ability implements IAbilityDash {
+public class AbilityDash extends AbilityMovement implements IAbilityDash {
 
     /**
      * Dash behavior mode.
      */
     public enum DashMode {
         AGGRESSIVE,
-        DEFENSIVE;
+        DEFENSIVE,
+        DIRECTIONAL;
 
         @Override
         public String toString() {
             switch (this) {
-                case AGGRESSIVE: return "ability.dash.aggressive";
-                case DEFENSIVE: return "ability.dash.defensive";
-                default: return name();
+                case AGGRESSIVE:
+                    return "ability.dash.aggressive";
+                case DEFENSIVE:
+                    return "ability.dash.defensive";
+                case DIRECTIONAL:
+                    return "ability.dash.directional";
+                default:
+                    return name();
             }
         }
     }
@@ -55,7 +55,8 @@ public class AbilityDash extends Ability implements IAbilityDash {
         RIGHT(-90),
         DIAGONAL_BACK_LEFT(135),
         DIAGONAL_BACK_RIGHT(-135),
-        BACK(180);
+        BACK(180),
+        CUSTOM(0);
 
         private final float angleOffset;
 
@@ -65,6 +66,40 @@ public class AbilityDash extends Ability implements IAbilityDash {
 
         public float getAngleOffset() {
             return angleOffset;
+        }
+
+        @Override
+        public String toString() {
+            switch (this) {
+                case FORWARD:
+                    return "ability.dash.forward";
+                case DIAGONAL_FORWARD_LEFT:
+                    return "ability.dash.diagonalForwardLeft";
+                case DIAGONAL_FORWARD_RIGHT:
+                    return "ability.dash.diagonalForwardRight";
+                case LEFT:
+                    return "ability.dash.left";
+                case RIGHT:
+                    return "ability.dash.right";
+                case DIAGONAL_BACK_LEFT:
+                    return "ability.dash.diagonalBackLeft";
+                case DIAGONAL_BACK_RIGHT:
+                    return "ability.dash.diagonalBackRight";
+                case BACK:
+                    return "ability.dash.back";
+                case CUSTOM:
+                    return "ability.dash.custom";
+                default:
+                    return name();
+            }
+        }
+
+        public static DashDirection fromOrdinal(int ordinal) {
+            DashDirection[] values = values();
+            if (ordinal >= 0 && ordinal < values.length) {
+                return values[ordinal];
+            }
+            return DashDirection.FORWARD;
         }
     }
 
@@ -86,15 +121,15 @@ public class AbilityDash extends Ability implements IAbilityDash {
 
     // Type-specific parameters
     private DashMode dashMode = DashMode.DEFENSIVE;
+    private DashDirection dashDirection = DashDirection.FORWARD;
     private float dashDistance = 4.0f;
     private float dashSpeed = 0.5f;
+    private float dashAngle = 0.0f;
 
-    // Runtime state
-    private transient Vec3 dashDirection;
-    private transient double startX, startY, startZ;
-    private transient double prevTickX, prevTickZ;
+    // Type-specific runtime state
     private transient DashDirection chosenDirection;
-    private transient int maxActiveTicks;
+    private transient double preDashMotionX;
+    private transient double preDashMotionZ;
 
     public AbilityDash() {
         this.typeId = "ability.cnpc.dash";
@@ -102,14 +137,16 @@ public class AbilityDash extends Ability implements IAbilityDash {
         this.targetingMode = TargetingMode.AGGRO_TARGET;
         this.maxRange = 20.0f;
         this.minRange = 0.0f;
-        this.lockMovement = LockMovementType.NO;
+        this.lockMovement = LockMode.NO;
         this.cooldownTicks = 0;
         this.windUpTicks = 5;
         // No telegraph for dash - it's a quick evasive move
         this.telegraphType = TelegraphType.NONE;
         this.showTelegraph = false;
         this.windUpSound = "mob.bat.takeoff";
-        this.activeSound = "mob.endermen.portal";
+        this.defaultIconLayers = new DefaultIconLayer[]{
+            new DefaultIconLayer("customnpcs:textures/gui/ability/dash.png")
+        };
     }
 
     @Override
@@ -128,136 +165,109 @@ public class AbilityDash extends Ability implements IAbilityDash {
     }
 
     @Override
-    public boolean hasAbilityMovement() {
-        return true; // This ability moves the NPC
-    }
+    public void onExecute(EntityLivingBase caster, EntityLivingBase target) {
+        preDashMotionX = caster.motionX;
+        preDashMotionZ = caster.motionZ;
+        initMovement(caster, dashDistance, dashSpeed);
 
-    @Override
-    public void onExecute(EntityLivingBase caster, EntityLivingBase target, World world) {
-        startX = caster.posX;
-        startY = caster.posY;
-        startZ = caster.posZ;
-        prevTickX = caster.posX;
-        prevTickZ = caster.posZ;
-
-        // Safety timeout: expected ticks + generous buffer to prevent infinite dash
-        maxActiveTicks = dashSpeed > 0 ? (int)(dashDistance / dashSpeed) + 10 : 10;
-
-        // Choose random direction based on mode
-        DashDirection[] directions = dashMode == DashMode.AGGRESSIVE
-            ? AGGRESSIVE_DIRECTIONS
-            : DEFENSIVE_DIRECTIONS;
-        chosenDirection = directions[RANDOM.nextInt(directions.length)];
-
-        // NPC: dash direction is relative to aggro target facing
-        // Player: dash direction is relative to look direction
-        float baseYaw;
-        if (!isPlayerCaster(caster) && target != null) {
-            double dx = target.posX - caster.posX;
-            double dz = target.posZ - caster.posZ;
-            baseYaw = (float) Math.toDegrees(Math.atan2(-dx, dz));
+        if (dashMode == DashMode.DIRECTIONAL) {
+            // Dash straight in the caster's look direction
+            chosenDirection = dashDirection;
+            float baseYaw = getBaseYaw(caster, target);
+            float angleOffset = chosenDirection == DashDirection.CUSTOM ? dashAngle : chosenDirection.getAngleOffset();
+            float dashYaw = baseYaw + angleOffset;
+            setDirectionFromYaw(dashYaw);
         } else {
-            baseYaw = caster.rotationYaw;
+            // Choose random direction based on mode
+            DashDirection[] directions = dashMode == DashMode.AGGRESSIVE
+                ? AGGRESSIVE_DIRECTIONS
+                : DEFENSIVE_DIRECTIONS;
+            chosenDirection = directions[RANDOM.nextInt(directions.length)];
+
+            // Calculate direction: base yaw (toward target or look dir) + direction offset
+            float baseYaw = getBaseYaw(caster, target);
+            float dashYaw = baseYaw + chosenDirection.getAngleOffset();
+            setDirectionFromYaw(dashYaw);
         }
-
-        // Apply direction offset
-        float dashYaw = baseYaw + chosenDirection.getAngleOffset();
-        float yawRad = (float) Math.toRadians(dashYaw);
-
-        dashDirection = Vec3.createVectorHelper(
-            -Math.sin(yawRad),
-            0,
-            Math.cos(yawRad)
-        );
 
         // Small upward impulse for a skip/hop arc (gravity handles the descent)
         caster.motionY = 0.2;
     }
 
     @Override
-    public void onActiveTick(EntityLivingBase caster, EntityLivingBase target, World world, int tick) {
-        // Safety timeout or missing state: force-complete to prevent stuck NPC
-        if (!isPreview() && (dashDirection == null || tick > maxActiveTicks)) {
-            stopDash(caster);
+    public void onActiveTick(EntityLivingBase caster, EntityLivingBase target, int tick) {
+        if (checkTimeout(tick)) {
+            finishDash(caster);
             signalCompletion();
             return;
         }
 
-        if (dashDirection == null) {
+        if (movementDirection == null) {
+            finishDash(caster);
             signalCompletion();
             return;
         }
 
-        // Stall detection: if entity hasn't moved since last tick, it's stuck against a wall
-        if (!isPreview() && tick > 1) {
-            double dx = caster.posX - prevTickX;
-            double dz = caster.posZ - prevTickZ;
-            if (dx * dx + dz * dz < 0.0001) {
-                stopDash(caster);
-                signalCompletion();
-                return;
-            }
+        if (checkStall(caster, tick)) {
+            finishDash(caster);
+            signalCompletion();
+            return;
         }
-        prevTickX = caster.posX;
-        prevTickZ = caster.posZ;
+        updatePrevPosition(caster);
 
-        // Check if reached max distance
-        double travelDx = caster.posX - startX;
-        double travelDz = caster.posZ - startZ;
-        if (travelDx * travelDx + travelDz * travelDz >= (double) dashDistance * dashDistance) {
-            stopDash(caster);
+        if (getDistanceTraveledSq(caster) >= (double) dashDistance * dashDistance) {
+            finishDash(caster);
             signalCompletion();
             return;
         }
 
-        // Block detection (skip in preview - no real world collision)
-        if (!isPreview() && isDashBlocked(caster)) {
-            stopDash(caster);
+        if (checkBlocked(caster, dashSpeed)) {
+            finishDash(caster);
             signalCompletion();
             return;
         }
 
-        // Move caster (motionY left to gravity for skip arc)
-        caster.motionX = dashDirection.xCoord * dashSpeed;
-        caster.motionZ = dashDirection.zCoord * dashSpeed;
+        // Move caster (motionY left to gravity for skip arc).
+        // Directional mode layers the dash over incoming movement so momentum
+        // entering/exiting the dash stays fluid.
+        if (dashMode == DashMode.DIRECTIONAL) {
+            applyHorizontalMomentum(caster,
+                preDashMotionX + movementDirection.xCoord * dashSpeed,
+                preDashMotionZ + movementDirection.zCoord * dashSpeed);
+        } else {
+            applyVelocity(caster, dashSpeed);
+        }
+
         if (!isPreview()) {
-            caster.velocityChanged = true;
-
             // Trail particles
-            world.spawnParticle("smoke", caster.posX, caster.posY + 0.5, caster.posZ, 0, 0, 0);
-        }
-    }
-
-    private void stopDash(EntityLivingBase caster) {
-        caster.motionX = 0;
-        caster.motionZ = 0;
-        if (!isPreview()) {
-            caster.velocityChanged = true;
+            caster.worldObj.spawnParticle("smoke", caster.posX, caster.posY + 0.5, caster.posZ, 0, 0, 0);
         }
     }
 
     @Override
     public void onComplete(EntityLivingBase caster, EntityLivingBase target) {
-        stopDash(caster);
+        finishDash(caster);
     }
 
     @Override
     public void onInterrupt(EntityLivingBase caster, DamageSource source, float damage) {
-        stopDash(caster);
+        finishDash(caster);
     }
 
     @Override
     public void cleanup() {
-        dashDirection = null;
+        super.cleanup();
         chosenDirection = null;
-        maxActiveTicks = 0;
+        preDashMotionX = 0;
+        preDashMotionZ = 0;
     }
 
-    private boolean isDashBlocked(EntityLivingBase caster) {
-        if (dashDirection == null) return true;
-        double nextX = dashDirection.xCoord * dashSpeed;
-        double nextZ = dashDirection.zCoord * dashSpeed;
-        return !caster.worldObj.getCollidingBoundingBoxes(caster, caster.boundingBox.copy().offset(nextX, 0, nextZ)).isEmpty();
+    @Override
+    public void resetForBurst() {
+        super.resetForBurst();
+        chosenDirection = null;
+        preDashMotionX = 0;
+        preDashMotionZ = 0;
     }
 
     @Override
@@ -273,8 +283,10 @@ public class AbilityDash extends Ability implements IAbilityDash {
     @Override
     public void writeTypeNBT(NBTTagCompound nbt) {
         nbt.setString("dashMode", dashMode.name());
+        nbt.setString("dashDirection", dashDirection.name());
         nbt.setFloat("dashDistance", dashDistance);
         nbt.setFloat("dashSpeed", dashSpeed);
+        nbt.setFloat("dashAngle", dashAngle);
     }
 
     @Override
@@ -284,8 +296,16 @@ public class AbilityDash extends Ability implements IAbilityDash {
         } catch (Exception e) {
             this.dashMode = DashMode.DEFENSIVE;
         }
+
+        try {
+            this.dashDirection = DashDirection.valueOf(nbt.getString("dashDirection"));
+        } catch (Exception e) {
+            this.dashDirection = DashDirection.FORWARD;
+        }
+
         this.dashDistance = nbt.hasKey("dashDistance") ? nbt.getFloat("dashDistance") : 4.0f;
-        this.dashSpeed = nbt.hasKey("dashSpeed") ? nbt.getFloat("dashSpeed") : 0.5f;
+        this.dashSpeed = nbt.hasKey("dashSpeed") ? Math.max(0.01f, nbt.getFloat("dashSpeed")) : 0.5f;
+        this.dashAngle = nbt.hasKey("dashAngle") ? nbt.getFloat("dashAngle") : 0.0f;
     }
 
     // Getters & Setters
@@ -324,8 +344,44 @@ public class AbilityDash extends Ability implements IAbilityDash {
         this.dashSpeed = dashSpeed;
     }
 
+    public float getDashAngle() {
+        return dashAngle;
+    }
+
+    public void setDashAngle(float dashAngle) {
+        this.dashAngle = dashAngle;
+    }
+
+    public DashDirection getDashDirectionEnum() {
+        return dashDirection;
+    }
+
+    public void setDashDirectionEnum(DashDirection dashDirection) {
+        this.dashDirection = dashDirection;
+    }
+
+    @Override
+    public int getDashDirection() {
+        return dashDirection.ordinal();
+    }
+
+    @Override
+    public void setDashDirection(int mode) {
+        DashDirection[] values = DashDirection.values();
+        this.dashDirection = mode >= 0 && mode < values.length ? values[mode] : DashDirection.FORWARD;
+    }
+
+
     public DashDirection getChosenDirection() {
         return chosenDirection;
+    }
+
+    private void finishDash(EntityLivingBase caster) {
+        if (dashMode == DashMode.DIRECTIONAL) {
+            applyHorizontalMomentum(caster, preDashMotionX, preDashMotionZ);
+        } else {
+            stopMomentum(caster);
+        }
     }
 
     @SideOnly(Side.CLIENT)
@@ -337,7 +393,12 @@ public class AbilityDash extends Ability implements IAbilityDash {
             FieldDef.row(
                 FieldDef.floatField("ability.dashDistance", this::getDashDistance, this::setDashDistance),
                 FieldDef.floatField("ability.dashSpeed", this::getDashSpeed, this::setDashSpeed)
-            )
+            ),
+            FieldDef.row(
+                FieldDef.enumField("ability.dashDirection", DashDirection.class, this::getDashDirectionEnum, this::setDashDirectionEnum),
+                FieldDef.floatField("ability.dashAngle", this::getDashAngle, this::setDashAngle)
+                    .min(Float.NEGATIVE_INFINITY).visibleWhen(() -> getDashDirectionEnum() == DashDirection.CUSTOM)
+            ).visibleWhen(() -> this.getDashModeEnum() == DashMode.DIRECTIONAL)
         ));
     }
 }

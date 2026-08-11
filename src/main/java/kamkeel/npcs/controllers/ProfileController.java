@@ -7,7 +7,9 @@ import kamkeel.npcs.controllers.data.profile.Profile;
 import kamkeel.npcs.controllers.data.profile.ProfileInfoEntry;
 import kamkeel.npcs.controllers.data.profile.ProfileOperation;
 import kamkeel.npcs.controllers.data.profile.Slot;
+import kamkeel.npcs.network.packets.data.ProfileSharedQuestPacket;
 import net.minecraft.entity.player.EntityPlayer;
+import net.minecraft.entity.player.EntityPlayerMP;
 import net.minecraft.nbt.CompressedStreamTools;
 import net.minecraft.nbt.NBTTagCompound;
 import noppes.npcs.CustomNpcs;
@@ -453,6 +455,9 @@ public class ProfileController implements IProfileHandler {
             PlayerDataScript handler = ScriptController.Instance.getPlayerScripts(profile.player);
             verifySlotQuests(profile.player);
             save(profile.player, profile);
+            if (profile.player instanceof EntityPlayerMP) {
+                ProfileSharedQuestPacket.sendToPlayer((EntityPlayerMP) profile.player);
+            }
 
             IPlayer scriptPlayer = (IPlayer) NpcAPI.Instance().getIEntity(profile.player);
             EventHooks.onProfileCreate(handler, scriptPlayer, profile, newSlotId, true);
@@ -523,6 +528,10 @@ public class ProfileController implements IProfileHandler {
             // overwrite the destination slot with stale data.
             saveSlotData(profile.player, profile, prevSlot);
             loadSlotData(profile.player, profile, newSlotId);
+            syncSharedQuestsToPlayer(profile.player);
+            if (profile.player instanceof EntityPlayerMP) {
+                ProfileSharedQuestPacket.sendToPlayer((EntityPlayerMP) profile.player);
+            }
 
             EventHooks.onProfileChange(handler, scriptPlayer, profile, newSlotId, prevSlot, true);
         } else {
@@ -832,15 +841,6 @@ public class ProfileController implements IProfileHandler {
         else
             compound = (NBTTagCompound) compound.copy();
         playerData.setNBT(compound);
-
-        // Trade data is shared across all profile slots - copy from player's live data
-        PlayerData liveData = PlayerData.get(player);
-        if (liveData != null) {
-            NBTTagCompound tradeCompound = new NBTTagCompound();
-            liveData.tradeData.writeToNBT(tradeCompound);
-            playerData.tradeData.readFromNBT(tradeCompound);
-        }
-
         return playerData;
     }
 
@@ -869,6 +869,9 @@ public class ProfileController implements IProfileHandler {
             }
         }
 
+        // Update the profile cache
+        profile.sharedQuestTimestamps = universalFinished;
+
         // Push the universal shared completion times into every slot.
         for (ISlot slot : profile.getSlots().values()) {
             IPlayerData data = getSlotPlayerData(player, slot.getId());
@@ -881,22 +884,33 @@ public class ProfileController implements IProfileHandler {
         }
     }
 
+    public void syncSharedQuestsToPlayer(EntityPlayer player) {
+        Profile profile = getProfile(player);
+        if (profile == null || profile.sharedQuestTimestamps.isEmpty()) {
+            return;
+        }
+        PlayerQuestData questData = PlayerData.get(player).questData;
+        for (Map.Entry<Integer, Long> entry : profile.sharedQuestTimestamps.entrySet()) {
+            Long existing = questData.finishedQuests.get(entry.getKey());
+            if (existing == null || entry.getValue() > existing) {
+                questData.finishedQuests.put(entry.getKey(), entry.getValue());
+            }
+        }
+    }
+
     public void shareQuestCompletion(EntityPlayer player, int questId, long completeTime) {
         Profile profile = getProfile(player);
         if (profile == null) {
             return;
         }
-        for (ISlot slot : profile.getSlots().values()) {
-            IPlayerData playerData = getSlotPlayerData(player, slot.getId());
-            if (playerData != null) {
-                PlayerQuestData questData = (PlayerQuestData) playerData.getQuestData();
-                Long existing = questData.finishedQuests.get(questId);
-                if (existing == null || completeTime > existing) {
-                    questData.finishedQuests.put(questId, completeTime);
-                }
-                playerData.save();
-            }
+
+        Long existing = profile.sharedQuestTimestamps.get(questId);
+        if (existing == null || completeTime > existing) {
+            profile.sharedQuestTimestamps.put(questId, completeTime);
         }
         save(player, profile);
+        if (player instanceof EntityPlayerMP) {
+            ProfileSharedQuestPacket.sendToPlayer((EntityPlayerMP) player);
+        }
     }
 }

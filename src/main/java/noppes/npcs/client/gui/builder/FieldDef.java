@@ -2,12 +2,13 @@ package noppes.npcs.client.gui.builder;
 
 import cpw.mods.fml.relauncher.Side;
 import cpw.mods.fml.relauncher.SideOnly;
-import noppes.npcs.controllers.AnimationController;
-import noppes.npcs.controllers.data.Animation;
 import noppes.npcs.client.gui.SubGuiColorSelector;
 import noppes.npcs.client.gui.select.GuiAnimationSelection;
 import noppes.npcs.client.gui.select.GuiSoundSelection;
+import noppes.npcs.client.gui.select.GuiTexturePathSelection;
 import noppes.npcs.client.gui.util.SubGuiInterface;
+import noppes.npcs.controllers.AnimationController;
+import noppes.npcs.controllers.data.Animation;
 
 import java.util.List;
 import java.util.function.BooleanSupplier;
@@ -32,8 +33,8 @@ public class FieldDef {
     private String hoverText = null;
 
     // Numeric range
-    private float min = Float.MIN_VALUE;
-    private float max = Float.MAX_VALUE;
+    private float min = 0;
+    private float max = Float.POSITIVE_INFINITY;
 
     // Enum support
     private Class<? extends Enum<?>> enumClass;
@@ -118,10 +119,11 @@ public class FieldDef {
         return def;
     }
 
-    public static FieldDef subGuiField(String label, Supplier<SubGuiInterface> factory, Consumer<SubGuiInterface> resultHandler) {
+    @SuppressWarnings("unchecked")
+    public static <T> FieldDef subGuiField(String label, Supplier<T> factory, Consumer<T> resultHandler) {
         FieldDef def = new FieldDef(label, FieldType.SUB_GUI);
-        def.subGuiFactory = factory;
-        def.subGuiResultHandler = resultHandler;
+        def.subGuiFactory = (Supplier<SubGuiInterface>) (Supplier<?>) factory;
+        def.subGuiResultHandler = (Consumer<SubGuiInterface>) (Consumer<?>) resultHandler;
         return def;
     }
 
@@ -154,8 +156,8 @@ public class FieldDef {
 
     public static FieldDef colorSubGui(String label, Supplier<Integer> getter, Consumer<Integer> setter) {
         return subGuiField(label,
-            () -> new SubGuiColorSelector(getter.get()),
-            gui -> setter.accept(((SubGuiColorSelector) gui).color & 0x00FFFFFF))
+            () -> new SubGuiColorSelector(getter.get() & 0xFFFFFF),
+            gui -> setter.accept((((SubGuiColorSelector) gui).color & 0x00FFFFFF) | (getter.get() & 0xFF000000)))
             .buttonLabel(() -> String.format("%06X", getter.get() & 0xFFFFFF))
             .buttonTextColor(() -> getter.get() & 0xFFFFFF);
     }
@@ -174,9 +176,21 @@ public class FieldDef {
             .clearable(() -> setter.accept(""));
     }
 
+    public static FieldDef textureSubGui(String label, Supplier<String> getter, Consumer<String> setter) {
+        FieldDef def = new FieldDef(label, FieldType.STRING_BROWSE);
+        def.getter = () -> getter.get();
+        def.setter = v -> setter.accept(v != null ? v.toString() : "");
+        def.subGuiFactory = () -> new GuiTexturePathSelection(getter.get());
+        def.subGuiResultHandler = gui -> {
+            GuiTexturePathSelection t = (GuiTexturePathSelection) gui;
+            if (t.selectedResource != null) setter.accept(t.selectedResource.toString());
+        };
+        return def;
+    }
+
     public static FieldDef animSubGui(String label,
-            Supplier<Integer> idGetter, Consumer<Integer> idSetter,
-            Supplier<String> nameGetter, Consumer<String> nameSetter) {
+                                      Supplier<Integer> idGetter, Consumer<Integer> idSetter,
+                                      Supplier<String> nameGetter, Consumer<String> nameSetter) {
         return subGuiField(label,
             () -> new GuiAnimationSelection(idGetter.get(), nameGetter.get()),
             gui -> {
@@ -186,23 +200,34 @@ public class FieldDef {
                     idSetter.accept(-1);
                 } else {
                     idSetter.accept(sel.selectedAnimationId);
-                    nameSetter.accept("");
+                    String customName = sel.getSelectedName();
+                    nameSetter.accept(customName != null ? customName : "");
                 }
             })
             .buttonLabel(() -> {
                 String name = nameGetter.get();
-                if (name != null && !name.isEmpty()) return name;
                 int id = idGetter.get();
+                if (id < 0 && name != null && !name.isEmpty()) {
+                    // Built-in animation: show just the name
+                    return name;
+                }
                 if (id >= 0) {
+                    // Custom animation: show (X) Name
+                    if (name != null && !name.isEmpty()) {
+                        return "(" + id + ") " + name;
+                    }
                     Animation anim = AnimationController.Instance != null
                         ? (Animation) AnimationController.Instance.get(id) : null;
                     String animName = anim != null ? anim.getName() : "";
                     return animName != null && !animName.isEmpty()
-                        ? "(ID: " + id + ") " + animName : "ID: " + id;
+                        ? "(" + id + ") " + animName : String.valueOf(id);
                 }
                 return "gui.none";
             })
-            .clearable(() -> { idSetter.accept(-1); nameSetter.accept(""); });
+            .clearable(() -> {
+                idSetter.accept(-1);
+                nameSetter.accept("");
+            });
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -264,21 +289,65 @@ public class FieldDef {
     // GETTERS
     // ═══════════════════════════════════════════════════════════════════
 
-    public String getLabel() { return label; }
-    public FieldType getType() { return type; }
-    public String getTab() { return tab; }
-    public boolean isVisible() { return visibleWhen.getAsBoolean(); }
-    public boolean isEnabled() { return enabledWhen.getAsBoolean(); }
-    public String getHoverText() { return hoverText; }
-    public float getMin() { return min; }
-    public float getMax() { return max; }
-    public boolean hasRange() { return min != Float.MIN_VALUE || max != Float.MAX_VALUE; }
-    public Class<? extends Enum<?>> getEnumClass() { return enumClass; }
-    public String[] getStringEnumValues() { return stringEnumValues; }
-    public Supplier<SubGuiInterface> getSubGuiFactory() { return subGuiFactory; }
-    public Consumer<SubGuiInterface> getSubGuiResultHandler() { return subGuiResultHandler; }
-    public boolean hasClearAction() { return clearAction != null; }
-    public Runnable getClearAction() { return clearAction; }
+    public String getLabel() {
+        return label;
+    }
+
+    public FieldType getType() {
+        return type;
+    }
+
+    public String getTab() {
+        return tab;
+    }
+
+    public boolean isVisible() {
+        return visibleWhen.getAsBoolean();
+    }
+
+    public boolean isEnabled() {
+        return enabledWhen.getAsBoolean();
+    }
+
+    public String getHoverText() {
+        return hoverText;
+    }
+
+    public float getMin() {
+        return min;
+    }
+
+    public float getMax() {
+        return max;
+    }
+
+    public boolean hasRange() {
+        return min != 0 || max != Float.POSITIVE_INFINITY;
+    }
+
+    public Class<? extends Enum<?>> getEnumClass() {
+        return enumClass;
+    }
+
+    public String[] getStringEnumValues() {
+        return stringEnumValues;
+    }
+
+    public Supplier<SubGuiInterface> getSubGuiFactory() {
+        return subGuiFactory;
+    }
+
+    public Consumer<SubGuiInterface> getSubGuiResultHandler() {
+        return subGuiResultHandler;
+    }
+
+    public boolean hasClearAction() {
+        return clearAction != null;
+    }
+
+    public Runnable getClearAction() {
+        return clearAction;
+    }
 
     public Object getValue() {
         return getter != null ? getter.get() : null;
@@ -305,8 +374,13 @@ public class FieldDef {
         return buttonTextColorSupplier != null ? buttonTextColorSupplier.get() : null;
     }
 
-    public FieldDef getLeftChild() { return leftChild; }
-    public FieldDef getRightChild() { return rightChild; }
+    public FieldDef getLeftChild() {
+        return leftChild;
+    }
+
+    public FieldDef getRightChild() {
+        return rightChild;
+    }
 
     // ═══════════════════════════════════════════════════════════════════
     // LIST MANIPULATION (for mod injection)
@@ -356,7 +430,7 @@ public class FieldDef {
      *
      * @param fields      The field list to modify
      * @param targetLabel The label of the field to modify
-     * @param condition    The condition to replace
+     * @param condition   The condition to replace
      * @return true if the target was found and the condition was modified
      */
     public static boolean modifyVisibility(List<FieldDef> fields, String targetLabel, BooleanSupplier condition) {

@@ -8,17 +8,24 @@ import noppes.npcs.NoppesStringUtils;
 import noppes.npcs.client.ClientProxy;
 import noppes.npcs.client.gui.script.GuiScriptInterface;
 import noppes.npcs.client.gui.util.key.OverlayKeyPresetViewer;
-import noppes.npcs.client.gui.util.script.BracketMatcher;
-import noppes.npcs.client.gui.util.script.CommentHandler;
-import noppes.npcs.client.gui.util.script.CursorNavigation;
-import noppes.npcs.client.gui.util.script.GoToLineDialog;
-import noppes.npcs.client.gui.util.script.IndentHelper;
-import noppes.npcs.client.gui.util.script.JavaTextContainer;
+import noppes.npcs.client.gui.util.script.*;
 import noppes.npcs.client.gui.util.script.JavaTextContainer.LineData;
-import noppes.npcs.client.gui.util.script.RenameRefactorHandler;
-import noppes.npcs.client.gui.util.script.ScrollState;
-import noppes.npcs.client.gui.util.script.SearchReplaceBar;
-import noppes.npcs.client.gui.util.script.SelectionState;
+// New interpreter system imports
+import noppes.npcs.client.gui.util.script.autocomplete.AutocompleteMenu;
+import noppes.npcs.client.gui.util.script.interpreter.ScriptLine;
+import noppes.npcs.client.gui.util.script.interpreter.ScriptTextContainer;
+import noppes.npcs.client.gui.util.script.interpreter.field.FieldInfo;
+import noppes.npcs.client.gui.util.script.interpreter.field.FieldAccessInfo;
+import noppes.npcs.client.gui.util.script.interpreter.method.MethodCallInfo;
+import noppes.npcs.client.gui.util.script.interpreter.method.MethodInfo;
+import noppes.npcs.client.gui.util.script.interpreter.token.Token;
+import noppes.npcs.client.gui.util.script.interpreter.token.ScriptColorScheme;
+import noppes.npcs.client.gui.util.script.interpreter.token.TokenType;
+import noppes.npcs.client.gui.util.script.interpreter.hover.GutterIconRenderer;
+import noppes.npcs.client.gui.util.script.interpreter.hover.HoverState;
+import noppes.npcs.client.gui.util.script.interpreter.hover.TokenHoverRenderer;
+import noppes.npcs.client.gui.util.script.autocomplete.AutocompleteManager;
+import noppes.npcs.client.gui.util.script.interpreter.type.ScriptTypeInfo;
 import noppes.npcs.client.key.impl.ScriptEditorKeys;
 import noppes.npcs.constants.ScriptContext;
 import noppes.npcs.util.ValueUtil;
@@ -36,7 +43,7 @@ import static net.minecraft.client.gui.GuiScreen.isCtrlKeyDown;
 /**
  * Script text editor component with syntax highlighting, bracket matching,
  * smooth scrolling, and IDE-like features.
- * <p>
+ * 
  * Helper classes used:
  * - ScrollState: smooth scroll animation and state management
  * - SelectionState: cursor position and text selection management
@@ -47,10 +54,12 @@ import static net.minecraft.client.gui.GuiScreen.isCtrlKeyDown;
  */
 public class GuiScriptTextArea extends GuiNpcTextField {
 
+    private GuiScriptInterface parent;
+    
     // ==================== DIMENSIONS & POSITION ====================
     public int x;
     public int y;
-
+    
     // ==================== STATE FLAGS ====================
     public boolean active = false;
     public boolean enabled = true;
@@ -60,11 +69,11 @@ public class GuiScriptTextArea extends GuiNpcTextField {
     public boolean tripleClicked = false;
     private int clickCount = 0;
     private long lastClicked = 0L;
-
+    
     // ==================== TEXT & CONTAINER ====================
     public String text = null;
     public String highlightedWord;
-    private JavaTextContainer container = null;
+    private ScriptTextContainer container = null;
     private boolean enableCodeHighlighting = false;
     // Extra empty lines to allow padding at the bottom of the editor viewport
     private int bottomPaddingLines = 6;
@@ -89,16 +98,31 @@ public class GuiScriptTextArea extends GuiNpcTextField {
     // ==================== HELPER CLASS INSTANCES ====================
     private final ScrollState scroll = new ScrollState();
     private final SelectionState selection = new SelectionState();
-
+    private final HoverState hoverState = new HoverState();
+    /** When true, clicking a token will pin its hover tooltip until dismissed. */
+    public boolean clickToPinEnabled = false;
+    
     // ==================== UI COMPONENTS ====================
     private int cursorCounter;
     private ITextChangeListener listener;
     private static int LINE_NUMBER_GUTTER_WIDTH = 25;
-
+    
+    // ==================== GUTTER ICONS ====================
+    /** Hover state for gutter icons - tracks which icon the mouse is over */
+    private MethodInfo hoveredGutterMethod = null;
+    
     // ==================== UNDO/REDO ====================
     public List<UndoData> undoList = new ArrayList<>();
     public List<UndoData> redoList = new ArrayList<>();
     public boolean undoing = false;
+    
+    // Atomic undo: group typing into word-based undo steps
+    private long lastTypingTime = 0;
+    private int lastTypingPos = -1;
+
+    // Clipboard tracking for line-copy paste behavior
+    private boolean lastCopyWasLine = false;
+    private String lastCopiedLineText = null;
 
     // ==================== KEYS ====================
     public static final ScriptEditorKeys KEYS = new ScriptEditorKeys();
@@ -107,17 +131,26 @@ public class GuiScriptTextArea extends GuiNpcTextField {
     // ==================== SEARCH/REPLACE ====================
     public static final SearchReplaceBar searchBar = new SearchReplaceBar();
 
+    // ==================== PASTE SETTINGS ====================
+    private static final int PASTE_TRAILING_WS_TRIM_THRESHOLD = 16;
+    
     // ==================== GO TO LINE ====================
     private final GoToLineDialog goToLineDialog = new GoToLineDialog();
 
     // ==================== RENAME REFACTOR ====================
     private final RenameRefactorHandler renameHandler = new RenameRefactorHandler();
 
+    // ==================== AUTOCOMPLETE ====================
+    private final AutocompleteManager autocompleteManager = new AutocompleteManager();
+
     // ==================== CONSTRUCTOR ====================
 
     public GuiScriptTextArea(GuiScreen guiScreen, int id, int x, int y, int width, int height, String text) {
         super(id, guiScreen, x, y, width, height, null);
         init(x, y, width, height, text);
+
+        if (guiScreen instanceof GuiScriptInterface)
+            this.parent = (GuiScriptInterface) guiScreen;
     }
 
     public void init(int x, int y, int width, int height, String text) {
@@ -134,12 +167,13 @@ public class GuiScriptTextArea extends GuiNpcTextField {
         this.searchBaseHeight = 0;
         this.searchAppliedOffset = 0;
         this.searchBaseInitialized = false;
-
+        
         KEYS_OVERLAY.openOnClick = true;
         initGui();
         initializeKeyBindings();
+        // Propagate click-to-pin option into hover state
+        hoverState.setClickToPinEnabled(clickToPinEnabled);
     }
-
     public void initGui() {
         int endX = x + width, endY = y + height;
         int xOffset = hasVerticalScrollbar() ? -8 : -2;
@@ -147,11 +181,16 @@ public class GuiScriptTextArea extends GuiNpcTextField {
         KEYS_OVERLAY.borderCol1 = KEYS_OVERLAY.borderCol2 = 0xFF3c3c3c;
         int overlayWidth = 160;
         KEYS_OVERLAY.initGui(x + (width - overlayWidth) / 2 + 5, y + height / 10, overlayWidth,
-            height - height / 5 - 10);
+                height - height / 5 - 10);
 
         KEYS_OVERLAY.viewButton.scale = 0.45f;
         KEYS_OVERLAY.viewButton.initGui(endX + xOffset, endY - 26);
-
+        
+        // Dismiss autocomplete on resize to avoid positioning issues
+        if (autocompleteManager != null) {
+            autocompleteManager.dismiss();
+        }
+        
         // Initialize search bar (preserves state across initGui calls)
         searchBar.initGui(x, y, width);
         if (searchBar.isVisible()) { // If open
@@ -160,7 +199,7 @@ public class GuiScriptTextArea extends GuiNpcTextField {
             if (!active) // Focus search if opening another script tab & bar is open
                 searchBar.focus(false);
         }
-
+        
         // Initialize Go To Line dialog
         goToLineDialog.initGui(x, y, width);
     }
@@ -203,7 +242,7 @@ public class GuiScriptTextArea extends GuiNpcTextField {
                 int visibleLines = effectiveHeight / container.lineHeight;
                 // Calculate how many lines the search bar covers
                 int linesHiddenBySRB = searchBarOffset > 0 ? (int) Math.ceil(
-                    (double) searchBarOffset / container.lineHeight) : 0;
+                        (double) searchBarOffset / container.lineHeight) : 0;
 
                 for (int i = 0; i < container.lines.size(); i++) {
                     LineData ld = container.lines.get(i);
@@ -426,7 +465,7 @@ public class GuiScriptTextArea extends GuiNpcTextField {
             }
 
             @Override
-            public JavaTextContainer getContainer() {
+            public ScriptTextContainer getContainer() {
                 return container;
             }
 
@@ -453,48 +492,128 @@ public class GuiScriptTextArea extends GuiNpcTextField {
                 return width - LINE_NUMBER_GUTTER_WIDTH - 8; // Account for gutter and scrollbar
             }
         });
+        
+        // Initialize Autocomplete Manager with callback
+        autocompleteManager.setInsertCallback(new AutocompleteManager.InsertCallback() {
+            @Override
+            public void insertText(String text, int startPosition) {
+                // Replace text from startPosition to current cursor
+                String fullText = GuiScriptTextArea.this.text;
+                int cursorPos = selection.getCursorPosition();
+                
+                // Bounds check to prevent StringIndexOutOfBoundsException
+                int start = Math.max(0, Math.min(startPosition, fullText.length()));
+                int cursor = Math.max(start, Math.min(cursorPos, fullText.length()));
+                
+                String before = fullText.substring(0, start);
+                String after = fullText.substring(cursor);
+                setText(before + text + after);
+                selection.reset(start + text.length());
+                scrollToCursor();
+            }
+            
+            @Override
+            public void replaceTextRange(String text, int startPosition, int endPosition) {
+                // Replace text from startPosition to endPosition
+                String fullText = GuiScriptTextArea.this.text;
+                
+                // Bounds check to prevent StringIndexOutOfBoundsException
+                int start = Math.max(0, Math.min(startPosition, fullText.length()));
+                int end = Math.max(start, Math.min(endPosition, fullText.length()));
+                
+                String before = fullText.substring(0, start);
+                String after = fullText.substring(end);
+                setText(before + text + after);
+                selection.reset(start + text.length());
+                scrollToCursor();
+            }
+            
+            @Override
+            public void addImport(String importPath) {
+                // Add import statement and sort all imports
+                addAndSortImport(importPath);
+            }
+            
+            @Override
+            public int getCursorPosition() {
+                return selection.getCursorPosition();
+            }
+            
+            @Override
+            public void setCursorPosition(int position) {
+                selection.reset(Math.max(0, Math.min(position, GuiScriptTextArea.this.text.length())));
+                scrollToCursor();
+            }
+            
+            @Override
+            public String getText() {
+                return GuiScriptTextArea.this.text;
+            }
+            
+            @Override
+            public int[] getCursorScreenPosition() {
+                // Calculate screen position of cursor for menu placement
+                int cursorLine = getCursorLineIndex();
+                int cursorCol = 0;
+                if (container != null && container.lines != null && cursorLine < container.lines.size()) {
+                    LineData ld = container.lines.get(cursorLine);
+                    int cursorOffset = selection.getCursorPosition() - ld.start;
+                    ScriptLine sl = container.getDocument() != null ? container.getDocument().getLine(cursorLine) : null;
+                    if (sl != null) {
+                        cursorCol = sl.getRenderedWidth(0, Math.min(cursorOffset, ld.text.length()));
+                    } else {
+                        cursorCol = ClientProxy.Font.width(ld.text.substring(0, Math.min(cursorOffset, ld.text.length())));
+                    }
+                }
+                
+                int screenX = GuiScriptTextArea.this.x + LINE_NUMBER_GUTTER_WIDTH + 1 + cursorCol;
+                int lineY = cursorLine - scroll.getScrolledLine();
+                int screenY = GuiScriptTextArea.this.y + lineY * (container != null ? container.lineHeight : 12);
+                
+                return new int[] { screenX, screenY };
+            }
+            
+            @Override
+            public int[] getViewportDimensions() {
+                Minecraft mc = Minecraft.getMinecraft();
+                ScaledResolution sr = new ScaledResolution(mc, mc.displayWidth, mc.displayHeight);
+                return new int[] { sr.getScaledWidth(), sr.getScaledHeight() };
+            }
+        });
     }
 
     public boolean fullscreen() {
         return GuiScriptInterface.isFullscreen;
     }
-
-    public void setLanguage(String language) {
-        if (this.container != null) {
-            // this.container.setLanguage(language);
-            if (this.enableCodeHighlighting) {
-                this.container.formatCodeText();
-            }
-        }
-    }
-
+    
     // ==================== RENDERING ====================
     public void drawTextBox(int xMouse, int yMouse) {
         if (!visible)
             return;
         clampSelectionBounds();
-
-        // Dynamically calculate gutter width based on line count digits
+        
+        // Dynamically calculate gutter width based on line count digits + icon space
         if (container != null && container.linesCount > 0) {
             int maxLineNum = container.linesCount;
             String maxLineStr = "" + maxLineNum;
             int digitWidth = ClientProxy.Font.width(maxLineStr);
-            LINE_NUMBER_GUTTER_WIDTH = digitWidth + 10; // 10px total padding (5px left + 5px right)
+            LINE_NUMBER_GUTTER_WIDTH = digitWidth + 10 + GutterIconRenderer.ICON_GUTTER_WIDTH; // 10px padding + icon space
         }
         // Draw outer border around entire area
         int offset = fullscreen() ? 2 : 1;
         drawRect(x - offset, y - offset - searchBar.getTotalHeight(), x + width + offset, y + height + offset,
-            0xffa0a0a0);
+                ScriptColorScheme.getBackgroundStyle().getBorderColor());
 
         int searchHeight = searchBar.getTotalHeight();
 
 
         // Draw line number gutter background
-        drawRect(x, y, x + LINE_NUMBER_GUTTER_WIDTH, y + height, 0xff000000);
+        int viewportX = x + LINE_NUMBER_GUTTER_WIDTH;
+        drawRect(x, y, x + LINE_NUMBER_GUTTER_WIDTH, y + height, ScriptColorScheme.getBackgroundStyle().getGutterColor());
         // Draw text viewport background (starts after gutter)
-        drawRect(x + LINE_NUMBER_GUTTER_WIDTH, y, x + width, y + height, 0xff000000);
+        drawRect(x + LINE_NUMBER_GUTTER_WIDTH, y, x + width, y + height, ScriptColorScheme.getBackgroundStyle().getBackgroundColor());
         // Draw separator line between gutter and text area
-        drawRect(x + LINE_NUMBER_GUTTER_WIDTH - 1, y, x + LINE_NUMBER_GUTTER_WIDTH, y + height, 0xff3c3f41);
+        drawRect(x + LINE_NUMBER_GUTTER_WIDTH-1, y, x + LINE_NUMBER_GUTTER_WIDTH, y + height, ScriptColorScheme.getBackgroundStyle().getGutterSeparatorColor());
 
         // Enable scissor test to clip drawing to the TEXT viewport rectangle (excludes gutter)
         GL11.glEnable(GL11.GL_SCISSOR_TEST);
@@ -504,26 +623,103 @@ public class GuiScriptTextArea extends GuiNpcTextField {
 
         int maxScroll = Math.max(0, getPaddedLineCount() - container.visibleLines);
 
-        // Handle mouse wheel scroll - only consume when mouse is over this text area
-        boolean isMouseOverTextArea = xMouse >= x && xMouse < x + width && yMouse >= y && yMouse < y + height;
-        int wheelDelta = 0;
-        if (isMouseOverTextArea) {
-            wheelDelta = Mouse.getDWheel();
-            if (listener instanceof GuiNPCInterface) {
-                ((GuiNPCInterface) listener).mouseScroll = wheelDelta;
+        // Handle mouse wheel scroll
+        // Take whatever the parent screen has left for this frame rather than polling the wheel
+        // again - the poll is destructive and the parent has already drained it.
+        int wheelDelta = listener instanceof GuiNPCInterface ? ((GuiNPCInterface) listener).mouseScroll : Mouse.getDWheel();
+        if (listener instanceof GuiNPCInterface) {
+            ((GuiNPCInterface) listener).mouseScroll = 0;
+
+            // Intercept wheel scroll for tooltip (highest priority)
+            // Only consume the wheel event when the tooltip actually has content to scroll;
+            // otherwise let it fall through to the editor so non-scrollable tooltips don't eat input.
+            if (wheelDelta != 0 && hoverState.isTooltipVisible()) {
+                if (hoverState.isMouseOverTooltip(xMouse, yMouse)) {
+                    hoverState.scrollTooltip(wheelDelta);
+                    wheelDelta = 0;
+                } else {
+                    hoverState.clearHover();
+                }
             }
-            boolean canScroll = !KEYS_OVERLAY.isVisible() || KEYS_OVERLAY.isVisible() && !KEYS_OVERLAY.aboveOverlay;
-            if (wheelDelta != 0 && canScroll)
-                scroll.applyWheelScroll(wheelDelta, maxScroll);
+
+            // Let autocomplete menu consume scroll first if visible
+            if (wheelDelta != 0 && autocompleteManager.isVisible() && autocompleteManager.mouseScrolled(xMouse, yMouse, wheelDelta)) {
+                // Autocomplete consumed the scroll
+            } else {
+                boolean canScroll = !KEYS_OVERLAY.isVisible() || KEYS_OVERLAY.isVisible() && !KEYS_OVERLAY.aboveOverlay;
+                if (wheelDelta != 0 && canScroll) {
+                    int previousScrollLine = scroll.getScrolledLine();
+                    scroll.applyWheelScroll(wheelDelta, maxScroll);
+                    if (scroll.getScrolledLine() != previousScrollLine) {
+                        hoverState.clearHover();
+                    }
+            }
+        }
         }
 
         // Handle scrollbar dragging (delegated to ScrollState)
-        if (scroll.isClickScrolling())
+        if (scroll.isClickScrolling()) {
+            int prevLine = scroll.getScrolledLine();
             scroll.handleClickScrolling(yMouse, x, y, height, container.visibleLines, getPaddedLineCount(), maxScroll);
-
+            if (scroll.getScrolledLine() != prevLine) {
+                hoverState.clearHover();
+            }
+        }
+        // Handle tooltip scrollbar drag (update each frame; release when button lifted)
+        if (hoverState.isDraggingScrollbar()) {
+            if (Mouse.isButtonDown(0)) {
+                hoverState.updateScrollbarDrag(yMouse);
+            } else {
+                hoverState.releaseScrollbarDrag();
+            }
+        }
+        // Handle tooltip panel drag (update each frame; release when button lifted)
+        if (hoverState.isDraggingTooltip()) {
+            if (Mouse.isButtonDown(0)) {
+                hoverState.updateTooltipDrag(xMouse, yMouse);
+            } else {
+                hoverState.releaseTooltipDrag();
+            }
+        }
+        // Handle tooltip panel resize (update each frame; release when button lifted)
+        if (hoverState.isResizingTooltip()) {
+            if (Mouse.isButtonDown(0)) {
+                hoverState.updateTooltipResize(xMouse, yMouse);
+            } else {
+                hoverState.releaseTooltipResize();
+            }
+        }
+        // Handle autocomplete scrollbar drag
+        if (autocompleteManager.isDraggingScrollbarMenu()) {
+            if (Mouse.isButtonDown(0)) {
+                autocompleteManager.updateScrollbarDrag(yMouse);
+            } else {
+                autocompleteManager.releaseScrollbarDrag();
+            }
+        }
+        // Handle autocomplete panel drag
+        if (autocompleteManager.isDraggingPanel()) {
+            if (Mouse.isButtonDown(0)) {
+                autocompleteManager.updatePanelDrag(xMouse, yMouse);
+            } else {
+                autocompleteManager.releasePanelDrag();
+            }
+        }
+        // Handle autocomplete panel resize
+        if (autocompleteManager.isResizingPanel()) {
+            if (Mouse.isButtonDown(0)) {
+                autocompleteManager.updatePanelResize(xMouse, yMouse);
+            } else {
+                autocompleteManager.releasePanelResize();
+            }
+        }
+        
         // Update scroll animation
         scroll.initializeIfNeeded(scroll.getScrolledLine());
         scroll.update(maxScroll);
+
+        // Update hover state for token tooltips
+        updateHoverState(xMouse, yMouse);
 
         // Handle click-dragging for selection
         if (clicked) {
@@ -535,7 +731,7 @@ public class GuiScriptTextArea extends GuiNpcTextField {
                     doubleClicked = false;
                     tripleClicked = false;
                 }
-                setCursor(i, true);
+                setCursor(i, true);     
             }
         } else if (doubleClicked || tripleClicked) {
             doubleClicked = false;
@@ -546,8 +742,8 @@ public class GuiScriptTextArea extends GuiNpcTextField {
         // Calculate braces next to cursor to highlight
         int startBracket = 0, endBracket = 0;
         if (selection.getStartSelection() >= 0 && text != null && text.length() > 0 &&
-            (selection.getEndSelection() - selection.getStartSelection() == 1 || !selection.hasSelection())) {
-            int[] span = BracketMatcher.findBracketSpanAt(text, selection.getStartSelection());
+                (selection.getEndSelection() - selection.getStartSelection() == 1 || !selection.hasSelection())) {
+            int[] span = BracketMatcher.findBracketSpanAt(text,selection.getStartSelection());
             if (span != null) {
                 startBracket = span[0];
                 endBracket = span[1];
@@ -555,12 +751,12 @@ public class GuiScriptTextArea extends GuiNpcTextField {
         }
 
         List<JavaTextContainer.LineData> list = new ArrayList<>(container.lines);
-
+  
         // Build brace spans: {origDepth, open line, close line, adjustedDepth}
         List<int[]> braceSpans = BracketMatcher.computeBraceSpans(text, list);
         // Always highlight unmatched braces (positions in text)
         List<Integer> unmatchedBraces = BracketMatcher.findUnmatchedBracePositions(text);
-
+        
         // Determine which exact brace span (openLine/closeLine) to highlight indent guides for
         int highlightedOpenLine = -1;
         int highlightedCloseLine = -1;
@@ -629,34 +825,34 @@ public class GuiScriptTextArea extends GuiNpcTextField {
         float fracPixels = (float) (fracOffset * container.lineHeight);
         GL11.glPushMatrix();
         GL11.glTranslatef(0.0f, -fracPixels, 0.0f);
-
-
+        
+        
         // Expand render range by one line above/below so partially-visible lines are drawn
         int renderStart = Math.max(0, scroll.getScrolledLine() - 1);
         // Compute the last line index to render, including the last partially-visible line if any.
         // Adds the fractional scroll offset (fracOffset * lineHeight) to ensure the bottom line is drawn
         // when only part of it is visible in the viewport.
         int renderEnd = (int) Math.min(list.size() - 1,
-            scroll.getScrolledLine() + container.visibleLines + fracPixels + 1);
+                scroll.getScrolledLine() + container.visibleLines + fracPixels + 1);
 
         // Strings start drawing vertically this much into the line.
         int stringYOffset = 2;
-
+        
         // Render LINE GUTTER numbers
         for (int i = renderStart; i <= renderEnd; i++) {
             int posY = y + (i - scroll.getScrolledLine()) * container.lineHeight + stringYOffset;
             String lineNum = "" + (i + 1);
             int lineNumWidth = ClientProxy.Font.width(lineNum);
-            int lineNumX = x + LINE_NUMBER_GUTTER_WIDTH - lineNumWidth - 5; // right-align with 5px padding
+            int lineNumX = x + LINE_NUMBER_GUTTER_WIDTH - lineNumWidth - 5 - GutterIconRenderer.ICON_GUTTER_WIDTH; // right-align before icon space
             int lineNumY = posY + 1;
             // Highlight current line number
-            int lineNumColor = 0xFF606366;
+            int lineNumColor = ScriptColorScheme.getBackgroundStyle().getLineNumberColor();
             if (active && isEnabled()) {
                 for (int li = 0; li < list.size(); li++) {
                     LineData ld = list.get(li);
                     if (selection.getCursorPosition() >= ld.start && selection.getCursorPosition() < ld.end || (li == list.size() - 1 && selection.getCursorPosition() == text.length())) {
                         if (li == i) {
-                            lineNumColor = 0xFFb9c7d6;
+                            lineNumColor = ScriptColorScheme.getBackgroundStyle().getLineNumberActiveColor();
                             break;
                         }
                     }
@@ -664,10 +860,11 @@ public class GuiScriptTextArea extends GuiNpcTextField {
             }
             ClientProxy.Font.drawString(lineNum, lineNumX, lineNumY, lineNumColor);
         }
-
+        
         // Render Viewport
         for (int i = renderStart; i <= renderEnd; i++) {
             LineData data = list.get(i);
+            ScriptLine scriptLine = container.getDocument().getLine(i);
             String line = data.text;
             int w = line.length();
             // Use integer Y relative to scrolledLine; fractional offset applied via GL translate
@@ -676,13 +873,13 @@ public class GuiScriptTextArea extends GuiNpcTextField {
                 //Highlight braces the cursor position is on
                 if (startBracket != endBracket) {
                     if (startBracket >= data.start && startBracket < data.end) {
-                        int s = ClientProxy.Font.width(line.substring(0, startBracket - data.start));
-                        int e = ClientProxy.Font.width(line.substring(0, startBracket - data.start + 1)) + 1;
+                        int s = scriptLine.getRenderedWidth(0, startBracket - data.start);
+                        int e = scriptLine.getRenderedWidth(0, startBracket - data.start + 1) + 1;
                         drawRect(x + LINE_NUMBER_GUTTER_WIDTH + 1 + s, posY, x + LINE_NUMBER_GUTTER_WIDTH + 1 + e, posY + container.lineHeight + 0, 0x9900cc00);
                     }
                     if (endBracket >= data.start && endBracket < data.end) {
-                        int s = ClientProxy.Font.width(line.substring(0, endBracket - data.start));
-                        int e = ClientProxy.Font.width(line.substring(0, endBracket - data.start + 1)) + 1;
+                        int s = scriptLine.getRenderedWidth(0, endBracket - data.start);
+                        int e = scriptLine.getRenderedWidth(0, endBracket - data.start + 1) + 1;
                         drawRect(x + LINE_NUMBER_GUTTER_WIDTH + 1 + s, posY, x + LINE_NUMBER_GUTTER_WIDTH + 1 + e, posY + container.lineHeight + 0, 0x9900cc00);
                     }
                 }
@@ -692,8 +889,8 @@ public class GuiScriptTextArea extends GuiNpcTextField {
                     for (int ubPos : unmatchedBraces) {
                         if (ubPos >= data.start && ubPos < data.end) {
                             int rel = ubPos - data.start;
-                            int s = ClientProxy.Font.width(line.substring(0, rel));
-                            int e = ClientProxy.Font.width(line.substring(0, rel + 1)) + 1;
+                            int s = scriptLine.getRenderedWidth(0, rel);
+                            int e = scriptLine.getRenderedWidth(0, rel + 1) + 1;
                             drawRect(x + LINE_NUMBER_GUTTER_WIDTH + 1 + s, posY, x + LINE_NUMBER_GUTTER_WIDTH + 1 + e, posY + container.lineHeight, 0xffcc0000);
                         }
                     }
@@ -703,13 +900,13 @@ public class GuiScriptTextArea extends GuiNpcTextField {
                     Matcher m = container.regexWord.matcher(line);
                     while (m.find()) {
                         if (line.substring(m.start(), m.end()).equals(highlightedWord)) {
-                            int s = ClientProxy.Font.width(line.substring(0, m.start()));
-                            int e = ClientProxy.Font.width(line.substring(0, m.end())) + 1;
+                            int s = scriptLine.getRenderedWidth(0, m.start());
+                            int e = scriptLine.getRenderedWidth(0, m.end()) + 1;
                             drawRect(x + LINE_NUMBER_GUTTER_WIDTH + 1 + s, posY, x + LINE_NUMBER_GUTTER_WIDTH + 1 + e, posY + container.lineHeight, 0x99004c00);
                         }
                     }
                 }
-
+                
                 // Highlight search matches
                 if (searchBar.isVisible()) {
                     List<int[]> searchMatches = searchBar.getMatches();
@@ -721,8 +918,8 @@ public class GuiScriptTextArea extends GuiNpcTextField {
                             int matchStart = Math.max(match[0] - data.start, 0);
                             int matchEnd = Math.min(match[1] - data.start, line.length());
                             if (matchStart < matchEnd) {
-                                int s = ClientProxy.Font.width(line.substring(0, matchStart));
-                                int e = ClientProxy.Font.width(line.substring(0, matchEnd)) + 1;
+                                int s = scriptLine.getRenderedWidth(0, matchStart);
+                                int e = scriptLine.getRenderedWidth(0, matchEnd) + 1;
                                 boolean isExcluded = searchBar.isMatchExcluded(mi);
                                 // Current match gets brighter highlight, others get dimmer
                                 int highlightColor = (mi == currentMatchIdx) ? 0xBB4488ff : 0x662266aa;
@@ -756,10 +953,10 @@ public class GuiScriptTextArea extends GuiNpcTextField {
                             boolean isEmpty = (occ[0] == occ[1]);
 
                             if (occStart <= occEnd) {  // Changed from < to <= to handle empty case
-                                int s = ClientProxy.Font.width(line.substring(0, occStart));
-                                int e = isEmpty ? s + 2 : ClientProxy.Font.width(
-                                    line.substring(0, occEnd)) + 1; // 2px wide for empty
-                                int occX = x + LINE_NUMBER_GUTTER_WIDTH + s;
+                                int s = scriptLine.getRenderedWidth(0, occStart);
+                                int e = isEmpty ? s + 2 : scriptLine.getRenderedWidth(
+                                        0, occEnd) + 1; // 2px wide for empty
+                                int occX = x + LINE_NUMBER_GUTTER_WIDTH  + s;
                                 int occEndX = x + LINE_NUMBER_GUTTER_WIDTH + 2 + e;
                                 boolean isPrimary = renameHandler.isPrimaryOccurrence(occ[0]);
 
@@ -772,12 +969,12 @@ public class GuiScriptTextArea extends GuiNpcTextField {
                                     int borderColor = 0xDDFFFFFF;
                                     //RED BG
                                     drawRect(occX, posY, occEndX, posY + container.lineHeight, 0x33ff0000);
-
+                                    
                                     // Top border
                                     drawRect(occX, posY, occEndX, posY + 1, borderColor);
-                                    // Bottom border
+                                    // Bottom border  
                                     drawRect(occX, posY + container.lineHeight - 1, occEndX,
-                                        posY + container.lineHeight, borderColor);
+                                            posY + container.lineHeight, borderColor);
                                     // Left border
                                     drawRect(occX, posY, occX + 1, posY + container.lineHeight, borderColor);
                                     // Right border
@@ -789,8 +986,8 @@ public class GuiScriptTextArea extends GuiNpcTextField {
                                         String currentWord = renameHandler.getCurrentWord();
                                         if (currentWord != null && cursorInWord >= 0 && cursorInWord <= currentWord.length()) {
                                             String beforeCursor = currentWord.substring(0,
-                                                Math.min(cursorInWord, currentWord.length()));
-                                            int cursorX = occX + ClientProxy.Font.width(beforeCursor);
+                                                    Math.min(cursorInWord, currentWord.length()));
+                                            int cursorX = occX + scriptLine.getRenderedWidth(occStart, occStart + beforeCursor.length());
                                             // drawRect(cursorX, posY + 1, cursorX + 1, posY + container.lineHeight - 1,
                                             //    0xFFFFFFFF);
                                         }
@@ -800,18 +997,18 @@ public class GuiScriptTextArea extends GuiNpcTextField {
                         }
                     }
                 }
-
+                
                 // Highlight the current line (light gray) under any selection
                 if (active && isEnabled() && (selection.getCursorPosition() >= data.start && selection.getCursorPosition() < data.end || (i == list.size() - 1 && selection.getCursorPosition() == text.length()))) {
-                    drawRect(x, posY, x + width - 1, posY + container.lineHeight, 0x22e0e0e0);
+                    drawRect(x , posY, x + width - 1, posY + container.lineHeight, 0x22e0e0e0);
                 }
                 // Highlight selection
                 if (selection.hasSelection() && selection.getEndSelection() > data.start && selection.getStartSelection() <= data.end) {
                     if (selection.getStartSelection() < data.end) {
-                        int s = ClientProxy.Font.width(
-                            line.substring(0, Math.max(selection.getStartSelection() - data.start, 0)));
-                        int e = ClientProxy.Font.width(
-                            line.substring(0, Math.min(selection.getEndSelection() - data.start, w))) + 1;
+                        int s = scriptLine.getRenderedWidth(
+                                0, Math.max(selection.getStartSelection() - data.start, 0));
+                        int e = scriptLine.getRenderedWidth(
+                                0, Math.min(selection.getEndSelection() - data.start, w)) + 1;
                         drawRect(x + LINE_NUMBER_GUTTER_WIDTH + 1 + s, posY, x + LINE_NUMBER_GUTTER_WIDTH + 1 + e, posY + container.lineHeight, 0x992172ff);
                     }
                 }
@@ -848,30 +1045,43 @@ public class GuiScriptTextArea extends GuiNpcTextField {
 
                         boolean highlighted = (openLine == highlightedOpenLine && closeLine == highlightedCloseLine);
                         int guideColor = highlighted ? 0x9933cc00 : 0x33FFFFFF;
-
+                        
                         int topY = y + (drawStart - scroll.getScrolledLine()) * container.lineHeight;
                         int bottomY = y + (endLine - scroll.getScrolledLine() + 1) * container.lineHeight;
-                        if (highlighted)
-                            bottomY -= 2;
+                        if(highlighted)
+                            bottomY-=2;
                         drawRect(gx, topY, gx + 1, bottomY, guideColor);
                     }
                 }
                 int yPos = posY + stringYOffset;
-                data.drawString(x + LINE_NUMBER_GUTTER_WIDTH + 1, yPos, 0xFFe0e0e0);
+
+                //data.drawString(x + LINE_NUMBER_GUTTER_WIDTH + 1, yPos, 0xFFe0e0e0);
+
+                //scriptLine.drawString(x+LINE_NUMBER_GUTTER_WIDTH + 1, yPos, 0xFFe0e0e0);
+                scriptLine.drawStringHex(x + LINE_NUMBER_GUTTER_WIDTH + 1, yPos);
 
                 // Draw cursor: pause blinking while user is active recently
                 boolean recentInput = selection.hadRecentInput();
                 if (active && isEnabled() && (recentInput || (cursorCounter / 10) % 2 == 0) && (selection.getCursorPosition() >= data.start && selection.getCursorPosition() < data.end || (i == list.size() - 1 && selection.getCursorPosition() == text.length()))) {
-                    int posX = x + LINE_NUMBER_GUTTER_WIDTH + ClientProxy.Font.width(
-                        line.substring(0, Math.min(selection.getCursorPosition() - data.start, line.length())));
-                    drawRect(posX + 1, posY, posX + 2, posY + container.lineHeight, 0xffffffff);
+                    int posX = x + LINE_NUMBER_GUTTER_WIDTH + scriptLine.getRenderedWidth(
+                            0, Math.min(selection.getCursorPosition() - data.start, line.length()));
+                    drawRect(posX + 1, posY, posX + 2, posY  + container.lineHeight, ScriptColorScheme.getBackgroundStyle().getCaretColor());
                 }
             }
         }
+
+        // Render gutter icons for method override/implements
+        if (container != null && container.getDocument() != null) {
+            hoveredGutterMethod = GutterIconRenderer.renderIcons(container.lineHeight,
+                    x + LINE_NUMBER_GUTTER_WIDTH - GutterIconRenderer.ICON_GUTTER_WIDTH + 1, y, renderStart, renderEnd,
+                    scroll.getScrolledLine(), stringYOffset, container.getDocument().getAllMethods(), container.lines,
+                    xMouse, yMouse, fracPixels);
+        }
+        
         GL11.glPopMatrix();
         GL11.glDisable(GL11.GL_SCISSOR_TEST);
 
-
+        
         if (hasVerticalScrollbar()) {
             Minecraft.getMinecraft().renderEngine.bindTexture(GuiCustomScroll.resource);
             int effLines = Math.max(1, getPaddedLineCount());
@@ -881,27 +1091,51 @@ public class GuiScriptTextArea extends GuiNpcTextField {
             double linesCount = (double) effLines;
             int posY = (int) (y + 1f * scroll.getScrollPos() / linesCount * (height - 4)) + 1;
 
-            drawRect(posX, posY, posX + 5, posY + sbSize + 2, 0xFFe0e0e0);
+            drawRect(posX, posY, posX + 5, posY + sbSize + 2, ScriptColorScheme.getBackgroundStyle().getScrollbarColor());
         }
 
-        // Draw search/replace bar (overlays viewport)
+        if (parent != null)
+            parent.fullscreenButton.draw(xMouse, yMouse);
+        
+        searchBar.ownerGui = parent;
         searchBar.draw(xMouse, yMouse);
-
+        
         // Draw go to line dialog (overlays everything)
         goToLineDialog.draw(xMouse, yMouse);
+        
         KEYS_OVERLAY.draw(xMouse, yMouse, wheelDelta);
+
+        autocompleteManager.getMenu().ownerGui = parent;
+        autocompleteManager.draw(xMouse, yMouse);
+
+        // Draw hover tooltips (on top of everything)
+        if (hoverState.isTooltipVisible()) {
+            int xOffset = hasVerticalScrollbar() ? -8 : -2;
+            int viewportWidth = width - LINE_NUMBER_GUTTER_WIDTH;
+            int viewportY = y;
+            int viewportHeight = height;
+            TokenHoverRenderer.render(hoverState, viewportX, viewportWidth+xOffset, viewportY, viewportHeight,parent);
+        }
+
+        // Draw gutter icon tooltip
+        if (hoveredGutterMethod != null) {
+            GutterIconRenderer.renderTooltip(hoveredGutterMethod, xMouse, yMouse, x, width, y, height);
+        }
     }
 
     private void scissorViewport() {
         Minecraft mc = Minecraft.getMinecraft();
         ScaledResolution sr = new ScaledResolution(mc, mc.displayWidth, mc.displayHeight);
         int scaleFactor = sr.getScaleFactor();
-        int scissorX = (this.x) * scaleFactor;
-        int scissorY = (sr.getScaledHeight() - (this.y + this.height)) * scaleFactor;
-        int scissorW = (this.width) * scaleFactor;
+        double panX = parent != null ? parent.getPanX() : 0;
+        double panY = parent != null ? parent.getPanY() : 0;
+        int scissorX = (int)((this.x - panX) * scaleFactor);
+        int scissorY = (int)((sr.getScaledHeight() - (this.y - panY + this.height)) * scaleFactor);
+        int scissorW = this.width * scaleFactor;
         int scissorH = this.height * scaleFactor;
         GL11.glScissor(scissorX, scissorY, scissorW, scissorH);
     }
+    
     // ==================== SELECTION & CURSOR POSITION ====================
 
     // Get cursor position from mouse coordinates
@@ -913,20 +1147,23 @@ public class GuiScriptTextArea extends GuiNpcTextField {
         // visible lines (fractional positions) correctly hit that line.
         double fracPixels = scroll.getFractionalOffset() * container.lineHeight;
         double yMouseD = yMouse + fracPixels;
-
+        
         ArrayList list = new ArrayList(this.container.lines);
 
         for (int i = 0; i < list.size(); ++i) {
             LineData data = (LineData) list.get(i);
             //+1 to account for the fractional line
-            if (i >= scroll.getScrolledLine() && i <= scroll.getScrolledLine() + this.container.visibleLines + 1) {
+            if (i >= scroll.getScrolledLine() && i <= scroll.getScrolledLine() + this.container.visibleLines +1) {
                 double yPos = (i - scroll.getScrolledLine()) * this.container.lineHeight;
                 if (yMouseD >= yPos && yMouseD < yPos + this.container.lineHeight) {
+                    ScriptLine scriptLine = container.getDocument() != null ? container.getDocument().getLine(i) : null;
                     int lineWidth = 0;
                     char[] chars = data.text.toCharArray();
 
                     for (int j = 1; j <= chars.length; ++j) {
-                        int w = ClientProxy.Font.width(data.text.substring(0, j));
+                        int w = scriptLine != null
+                                ? scriptLine.getRenderedWidth(0, j)
+                                : ClientProxy.Font.width(data.text.substring(0, j));
                         if (xMouse < lineWidth + (w - lineWidth) / 2) {
                             return data.start + j - 1;
                         }
@@ -952,13 +1189,123 @@ public class GuiScriptTextArea extends GuiNpcTextField {
     private int getCursorLineIndex() {
         return selection.getCursorLineIndex(container.lines, text != null ? text.length() : 0);
     }
+    
+    /**
+     * Get the token at a specific screen position (mouse coordinates).
+     * Also returns the token's screen position and dimensions for tooltip placement.
+     * 
+     * @param xMouse Screen X coordinate
+     * @param yMouse Screen Y coordinate
+     * @return Array of [Token, tokenScreenX, tokenScreenY, tokenWidth] or null if no token
+     */
+    private Object[] getTokenAtScreenPosition(int xMouse, int yMouse) {
+        if (container == null || !(container instanceof ScriptTextContainer)) {
+            return null;
+        }
+        
+        ScriptTextContainer scriptContainer = (ScriptTextContainer) container;
+        
+        // Check if mouse is within the text viewport
+        int viewportX = x + LINE_NUMBER_GUTTER_WIDTH + 1;
+        if (xMouse < viewportX || xMouse > x + width || yMouse < y || yMouse > y + height) {
+            return null;
+        }
+        
+        // Adjust mouse position relative to text area
+        int relativeY = yMouse - y;
 
-
+        // Account for fractional scrolling
+        double fracOffset = scroll.getFractionalOffset();
+        double fracPixels = fracOffset * container.lineHeight;
+        double adjustedY = relativeY + fracPixels;
+        
+        // Find which line the mouse is over
+        int lineIdx = scroll.getScrolledLine() + (int)(adjustedY / container.lineHeight);
+        if (lineIdx < 0 || lineIdx >= container.lines.size()) {
+            return null;
+        }
+        
+        ScriptLine lineData = container.getDocument().getLine(lineIdx);
+        String lineText = lineData.getText();
+        int lineStart = lineData.getGlobalStart();
+        
+        // Get the token at this position
+        int globalMouseX = getSelectionPos(xMouse,yMouse);
+        Token token = lineData.getTokenAt(globalMouseX, (t) -> t.getType() != TokenType.DEFAULT); // Ignore default tokens i.e. whitespaces
+        if (token == null) 
+            return null;
+        
+        // Calculate token's screen position
+        int tokenLocalStart = token.getGlobalStart() - lineStart;
+        int tokenLocalEnd = token.getGlobalEnd() - lineStart;
+        tokenLocalStart = Math.max(0, Math.min(tokenLocalStart, lineText.length()));
+        tokenLocalEnd = Math.max(0, Math.min(tokenLocalEnd, lineText.length()));
+        
+        int tokenScreenX = viewportX + lineData.getRenderedWidth(0, tokenLocalStart);
+        int tokenScreenY = y + (lineIdx - scroll.getScrolledLine()) * container.lineHeight - (int)fracPixels;
+        int tokenWidth = lineData.getRenderedWidth(tokenLocalStart, tokenLocalEnd);
+        
+        return new Object[] { token, tokenScreenX, tokenScreenY, tokenWidth };
+    }
+    
+    /**
+     * Update hover state based on current mouse position.
+     * Called every frame from drawTextBox.
+     */
+    private void updateHoverState(int xMouse, int yMouse) {
+        // Keep tooltip alive and skip token re-evaluation while it is being dragged
+        if (hoverState.isDraggingTooltip()) {
+            hoverState.setLastMousePosition(xMouse, yMouse);
+            return;
+        }
+        // Keep tooltip alive while resizing (mouse may be outside the panel bounds)
+        if (hoverState.isResizingTooltip()) {
+            hoverState.setLastMousePosition(xMouse, yMouse);
+            return;
+        }
+        // Tooltip has been dragged or resized — keep it pinned until an explicit outside click
+        if (hoverState.hasOverriddenPosition() || hoverState.hasOverriddenSize()) {
+            hoverState.setLastMousePosition(xMouse, yMouse);
+            return;
+        }
+        // If mouse is currently over the tooltip panel, keep it visible — do not clear or re-evaluate tokens
+        if (hoverState.isTooltipVisible() && hoverState.isMouseOverTooltip(xMouse, yMouse)) {
+            hoverState.setLastMousePosition(xMouse, yMouse);
+            return;
+        }
+        // Don't show tooltips when not active, clicking, or when overlays are visible
+        if (!isEnabled() || clicked || searchBar.isVisible() ||
+                goToLineDialog.isVisible() || KEYS_OVERLAY.isVisible() || renameHandler.isActive() || autocompleteManager.isVisible()) {
+            hoverState.clearHover();
+            return;
+        }
+        
+        // Get token at current mouse position
+        Object[] tokenInfo = getTokenAtScreenPosition(xMouse, yMouse);
+        
+        if (tokenInfo != null) {
+            Token token = (Token) tokenInfo[0];
+            int tokenScreenX = (Integer) tokenInfo[1];
+            int tokenScreenY = (Integer) tokenInfo[2];
+            int tokenWidth = (Integer) tokenInfo[3];
+            
+            hoverState.update(xMouse, yMouse, token, tokenScreenX, tokenScreenY, tokenWidth);
+        } else {
+            // If mouse is over the tooltip box, keep tooltip visible — do not clear
+            if (hoverState.isMouseOverTooltip(xMouse, yMouse)) {
+                hoverState.setLastMousePosition(xMouse, yMouse);
+                return;
+            }
+            hoverState.update(xMouse, yMouse, null, 0, 0, 0);
+        }
+    }
+    
+    
     // Scroll viewport to keep cursor visible (minimal adjustment, like IntelliJ)
     // Only scrolls if cursor is outside the visible area
     private void scrollToCursor() {
         if (container == null || container.lines == null || container.lines.isEmpty()) return;
-
+        
         int lineIdx = getCursorLineIndex();
         int visible = Math.max(1, container.visibleLines);
         int effectiveVisible = Math.max(1, visible - bottomPaddingLines);
@@ -1038,13 +1385,35 @@ public class GuiScriptTextArea extends GuiNpcTextField {
             }
         });
 
-        // COPY: Copy selection to clipboard
+        // COPY: Copy selection to clipboard (or entire line if no selection)
         KEYS.COPY.setTask(e -> {
             if (!e.isPress() || !isActive.get())
                 return;
 
-            if (selection.hasSelection())
+            if (selection.hasSelection()) {
                 NoppesStringUtils.setClipboardContents(selection.getSelectedText(text));
+                lastCopyWasLine = false;
+                lastCopiedLineText = null;
+            } else {
+                // Copy entire current line (including newline)
+                int cursor = selection.getCursorPosition();
+                LineData targetLine = null;
+                for (LineData line : container.lines) {
+                    if (cursor >= line.start && cursor <= line.end) {
+                        targetLine = line;
+                        break;
+                    }
+                }
+                
+                if (targetLine != null) {
+                    int safeStart = Math.max(0, Math.min(targetLine.start, text.length()));
+                    int safeEnd = Math.max(safeStart, Math.min(targetLine.end, text.length()));
+                    String lineText = text.substring(safeStart, safeEnd);
+                    NoppesStringUtils.setClipboardContents(lineText);
+                    lastCopyWasLine = true;
+                    lastCopiedLineText = lineText;
+                }
+            }
         });
 
         // PASTE: Insert clipboard contents at caret
@@ -1052,7 +1421,48 @@ public class GuiScriptTextArea extends GuiNpcTextField {
             if (!e.isPress() || !isActive.get())
                 return;
 
-            addText(NoppesStringUtils.getClipboardContents());
+            String clipboardRaw = NoppesStringUtils.getClipboardContents();
+            if (clipboardRaw == null)
+                clipboardRaw = "";
+
+            boolean isLinePaste = lastCopyWasLine && lastCopiedLineText != null && clipboardRaw.equals(lastCopiedLineText);
+            String clipboard = FormatHelper.sanitizeClipboard(clipboardRaw, PASTE_TRAILING_WS_TRIM_THRESHOLD);
+
+            if (selection.hasSelection()) {
+                addText(clipboard);
+                lastCopyWasLine = false;
+                lastCopiedLineText = null;
+                scrollToCursor();
+                return;
+            }
+
+            if (isLinePaste && container != null && container.lines != null) {
+                LineData currentLine = selection.findCurrentLine(container.lines);
+                if (currentLine != null) {
+                    int insertPos = Math.max(0, Math.min(currentLine.end, text.length()));
+                    String insertText = clipboard;
+
+                    // Ensure insertion happens on the line below
+                    if (insertPos > 0 && text.charAt(insertPos - 1) != '\n') {
+                        insertText = "\n" + insertText;
+                    }
+
+                    // Ensure the inserted line doesn't merge with the following line
+                    if (insertPos < text.length() && !insertText.endsWith("\n")) {
+                        insertText = insertText + "\n";
+                    }
+
+                    String newText = text.substring(0, insertPos) + insertText + text.substring(insertPos);
+                    setText(newText);
+
+                    int newCursor = insertPos + (insertText.startsWith("\n") ? 1 : 0);
+                    selection.reset(Math.min(newCursor, newText.length()));
+                    scrollToCursor();
+                    return;
+                }
+            }
+
+            addText(clipboard);
             scrollToCursor();
         });
 
@@ -1165,6 +1575,142 @@ public class GuiScriptTextArea extends GuiNpcTextField {
             }
         });
 
+        // DELETE_LINE: Delete the current line
+        KEYS.DELETE_LINE.setTask(e -> {
+            if (!e.isPress() || !isActive.get())
+                return;
+
+            if (text == null || text.isEmpty())
+                return;
+
+            int cursor = selection.getCursorPosition();
+            
+            LineData targetLine = null;
+            int targetIndex = -1;
+            for (LineData line : container.lines) {
+                if (cursor >= line.start && cursor <= line.end) {
+                    targetLine = line;
+                    targetIndex = container.lines.indexOf(line);
+                    break;
+                }
+            }
+            
+            if (targetLine == null)
+                return;
+            
+            int start = Math.max(0, Math.min(targetLine.start, text.length()));
+            int end = Math.max(start, Math.min(targetLine.end, text.length()));
+            
+            String newText = text.substring(0, start) + text.substring(end);
+            setText(newText);
+
+            int newCursor = 0;
+            if (targetIndex > 0 && targetIndex <= container.lines.size() - 1) {
+                LineData previousLine = container.lines.get(targetIndex - 1);
+                int prevStart = Math.max(0, Math.min(previousLine.start, newText.length()));
+                int prevEnd = Math.max(prevStart, Math.min(previousLine.end, newText.length()));
+                int prevLen = Math.max(0, prevEnd - prevStart);
+                int offsetInLine = Math.max(0, Math.min(cursor - targetLine.start, prevLen));
+                newCursor = Math.min(prevStart + offsetInLine, newText.length());
+            }
+
+            selection.reset(Math.min(newCursor, newText.length()));
+            scrollToCursor();
+        });
+
+        // MOVE_LINE_UP: Move current line up
+        KEYS.MOVE_LINE_UP.setThrottleInterval(50).setTask(e -> {
+            if ((!e.isPress() && !e.isHold()) || !isActive.get())
+                return;
+
+            if (text == null || text.isEmpty())
+                return;
+
+            int tLen = text.length();
+            int cursor = Math.max(0, Math.min(selection.getCursorPosition(), tLen));
+
+            // Work on real newline-delimited lines, not wrapped LineData.
+            int currStart = text.lastIndexOf('\n', Math.max(0, cursor - 1));
+            currStart = currStart == -1 ? 0 : (currStart + 1);
+            if (currStart == 0)
+                return; // Can't move first line up
+
+            int currEnd = text.indexOf('\n', cursor);
+            currEnd = currEnd == -1 ? tLen : (currEnd + 1);
+
+            int prevEnd = currStart;
+            int prevStart = text.lastIndexOf('\n', Math.max(0, prevEnd - 2));
+            prevStart = prevStart == -1 ? 0 : (prevStart + 1);
+
+            String previousText = text.substring(prevStart, prevEnd);
+            String currentText = text.substring(currStart, currEnd);
+
+            // If current line is the last line without a trailing newline, but it is being moved
+            // into the middle, ensure it ends with '\n' by transferring the '\n' from the previous line.
+            if (!currentText.endsWith("\n") && previousText.endsWith("\n") && !previousText.isEmpty()) {
+                currentText = currentText + "\n";
+                previousText = previousText.substring(0, previousText.length() - 1);
+            }
+
+            String before = text.substring(0, prevStart);
+            String after = text.substring(currEnd);
+            String newText = before + currentText + previousText + after;
+            setText(newText);
+
+            int currentContentLen = currentText.endsWith("\n") ? Math.max(0, currentText.length() - 1) : currentText.length();
+            int offsetInLine = Math.max(0, Math.min(cursor - currStart, currentContentLen));
+            int newCursor = Math.min(prevStart + offsetInLine, newText.length());
+            selection.reset(newCursor);
+            scrollToCursor();
+        });
+
+        // MOVE_LINE_DOWN: Move current line down
+        KEYS.MOVE_LINE_DOWN.setThrottleInterval(50).setTask(e -> {
+            if ((!e.isPress() && !e.isHold()) || !isActive.get())
+                return;
+
+            if (text == null || text.isEmpty())
+                return;
+
+            int tLen = text.length();
+            int cursor = Math.max(0, Math.min(selection.getCursorPosition(), tLen));
+
+            // Work on real newline-delimited lines, not wrapped LineData.
+            int currStart = text.lastIndexOf('\n', Math.max(0, cursor - 1));
+            currStart = currStart == -1 ? 0 : (currStart + 1);
+
+            int currEnd = text.indexOf('\n', cursor);
+            currEnd = currEnd == -1 ? tLen : (currEnd + 1);
+            if (currEnd >= tLen)
+                return; // Can't move last line down
+
+            int nextStart = currEnd;
+            int nextEnd = text.indexOf('\n', nextStart);
+            nextEnd = nextEnd == -1 ? tLen : (nextEnd + 1);
+
+            String currentText = text.substring(currStart, currEnd);
+            String nextText = text.substring(nextStart, nextEnd);
+
+            // If the next line is the last line and doesn't end with '\n' (common when it contains
+            // only indentation spaces), swapping can merge whitespace onto the moved line.
+            // Fix by transferring the '\n' from currentText to nextText.
+            if (!nextText.endsWith("\n") && currentText.endsWith("\n") && !currentText.isEmpty()) {
+                currentText = currentText.substring(0, currentText.length() - 1);
+                nextText = nextText + "\n";
+            }
+
+            String before = text.substring(0, currStart);
+            String after = text.substring(nextEnd);
+            String newText = before + nextText + currentText + after;
+            setText(newText);
+
+            int currentContentLen = currentText.endsWith("\n") ? Math.max(0, currentText.length() - 1) : currentText.length();
+            int offsetInLine = Math.max(0, Math.min(cursor - currStart, currentContentLen));
+            int newCursor = Math.min(currStart + nextText.length() + offsetInLine, newText.length());
+            selection.reset(newCursor);
+            scrollToCursor();
+        });
+
 
         // Check if can open just for SearchReplaceBar and GoToLine
 
@@ -1173,27 +1719,27 @@ public class GuiScriptTextArea extends GuiNpcTextField {
         KEYS.SEARCH.setTask(e -> {
             if (!e.isPress() || !openBoxes.get())
                 return;
-
+            
             unfocusAll();
             searchBar.openSearch();
         });
-
+        
         // SEARCH_REPLACE: Open search+replace bar (Ctrl+Shift+R)
         // Works in search bar.
         KEYS.SEARCH_REPLACE.setTask(e -> {
             if (!e.isPress() || !openBoxes.get())
                 return;
-
+            
             unfocusAll();
             searchBar.openSearchReplace();
         });
-
+        
         // GO_TO_LINE: Open go to line dialog (Ctrl+G)
         // Works in search bar.
         KEYS.GO_TO_LINE.setTask(e -> {
             if (!e.isPress() || !openBoxes.get())
                 return;
-
+            
             unfocusAll();
             goToLineDialog.toggle();
         });
@@ -1210,6 +1756,14 @@ public class GuiScriptTextArea extends GuiNpcTextField {
                 renameHandler.startRename();
             }
         });
+        
+        // AUTOCOMPLETE: Trigger autocomplete (Ctrl+Space)
+        KEYS.AUTOCOMPLETE.setTask(e -> {
+            if (!e.isPress() || !isActive.get())
+                return;
+            
+            autocompleteManager.triggerExplicit();
+        });
     }
 
     public void unfocusAll() {
@@ -1217,6 +1771,8 @@ public class GuiScriptTextArea extends GuiNpcTextField {
         if (goToLineDialog.hasFocus()) goToLineDialog.unfocus();
         if (renameHandler.isActive())
             renameHandler.cancel();
+        if (autocompleteManager.isVisible())
+            autocompleteManager.dismiss();
     }
     // ==================== KEYBOARD INPUT HANDLING ====================
 
@@ -1232,14 +1788,32 @@ public class GuiScriptTextArea extends GuiNpcTextField {
         // Handle rename refactor input first if active
         if (renameHandler.isActive() && renameHandler.keyTyped(c, i))
             return true;
-
+        
         // Handle Go To Line dialog input first if it has focus
-        if (goToLineDialog.isVisible() && goToLineDialog.keyTyped(c, i))
-            return true;
-
+        if (goToLineDialog.isVisible() &&goToLineDialog.keyTyped(c, i)) 
+                return true;
+        
         // Handle search bar input first if it has focus
-        if (searchBar.isVisible() && searchBar.keyTyped(c, i))
+        if (searchBar.isVisible() && searchBar.keyTyped(c, i)) 
             return true;
+        
+        // Handle autocomplete navigation keys first when visible
+        if (autocompleteManager.isVisible()) {
+            if (autocompleteManager.keyPressed(i)) {
+                return true;
+            }
+        }
+
+        // Dismiss pinned/resized tooltip on Escape
+        if (i == Keyboard.KEY_ESCAPE && hoverState.isTooltipVisible()
+                && (hoverState.hasOverriddenPosition() || hoverState.hasOverriddenSize())) {
+            hoverState.clearHover();
+            return true;
+        }
+        // Ignore if any global keys bound to this code are currently pressed
+        if (KEYS.hasMatchingKeyPressed(i))
+            return false;
+        
 
         if (!active)
             return false;
@@ -1268,20 +1842,31 @@ public class GuiScriptTextArea extends GuiNpcTextField {
         if (i == Keyboard.KEY_LEFT) {
             int j = 1; // default: move one character
             if (isCtrlKeyDown()) {
-                // When Ctrl is down, compute distance to previous word boundary.
-                // We match words in the text slice before the cursor and pick
-                // the last match start as the new boundary.
-                Matcher m = container.regexWord.matcher(text.substring(0, selection.getCursorPosition()));
-                while (m.find()) {
-                    if (m.start() == m.end())
-                        continue; // skip empty matches
-                    // j becomes the number of chars to move left to reach word start
-                    j = selection.getCursorPosition() - m.start();
+                int pos = selection.getCursorPosition();
+                int g = pos;
+                java.util.function.IntPredicate isWordChar = ch -> Character.isLetterOrDigit(ch) || ch == '_';
+
+                if (pos > 0) {
+                    char left = text.charAt(pos - 1);
+                    if (Character.isWhitespace(left)) {
+                        while (g - 1 >= 0 && Character.isWhitespace(text.charAt(g - 1))) g--;
+                    } else if (isWordChar.test(left)) {
+                        while (g - 1 >= 0 && isWordChar.test(text.charAt(g - 1))) g--;
+                    } else {
+                        while (g - 1 >= 0 && !Character.isWhitespace(text.charAt(g - 1)) && !isWordChar.test(text.charAt(g - 1))) g--;
+                    }
                 }
+                j = Math.max(1, pos - g);
             }
             int newPos = Math.max(selection.getCursorPosition() - j, 0);
             // If Shift is held, extend selection; otherwise place caret.
             setCursor(newPos, GuiScreen.isShiftKeyDown());
+            
+            // Notify autocomplete of cursor movement
+            if (autocompleteManager.isVisible()) {
+                autocompleteManager.onCursorMove(text, newPos);
+            }
+            
             return true;
         }
 
@@ -1289,26 +1874,30 @@ public class GuiScriptTextArea extends GuiNpcTextField {
         if (i == Keyboard.KEY_RIGHT) {
             int j = 1; // default: move one character
             if (isCtrlKeyDown()) {
-                String after = text.substring(selection.getCursorPosition());
-                Matcher m = container.regexWord.matcher(after);
-                if (m.find()) {
-                    if (m.start() == 0) {
-                        // If the first match starts at 0 (cursor at word start),
-                        // try to find the next match so we advance past the current word.
-                        if (m.find())
-                            j = m.start();
-                        else
-                            j = Math.max(1, after.length());
+                int pos = selection.getCursorPosition();
+                int end = pos;
+                java.util.function.IntPredicate isWordChar = ch -> Character.isLetterOrDigit(ch) || ch == '_';
+
+                if (pos < text.length()) {
+                    char first = text.charAt(pos);
+                    if (Character.isWhitespace(first)) {
+                        while (end < text.length() && Character.isWhitespace(text.charAt(end))) end++;
+                    } else if (isWordChar.test(first)) {
+                        while (end < text.length() && isWordChar.test(text.charAt(end))) end++;
                     } else {
-                        j = m.start();
+                        while (end < text.length() && !Character.isWhitespace(text.charAt(end)) && !isWordChar.test(text.charAt(end))) end++;
                     }
-                } else {
-                    // No word match found after cursor -> jump to end
-                    j = Math.max(1, after.length());
                 }
+                j = Math.max(1, end - pos);
             }
             int newPos = Math.min(selection.getCursorPosition() + j, text.length());
             setCursor(newPos, GuiScreen.isShiftKeyDown());
+            
+            // Notify autocomplete of cursor movement
+            if (autocompleteManager.isVisible()) {
+                autocompleteManager.onCursorMove(text, newPos);
+            }
+            
             return true;
         }
 
@@ -1345,29 +1934,141 @@ public class GuiScriptTextArea extends GuiNpcTextField {
             return true;
         }
 
-        // RETURN/ENTER: special handling when preceding char is an opening brace '{'
+        // RETURN/ENTER: special handling for /** javadoc stub and opening brace '{'
         if (i == Keyboard.KEY_RETURN) {
             int cursorPos = selection.getCursorPosition();
+
+            // JSDoc / comment Enter behavior summary:
+            // - If the caret is at (or after spaces/tabs following) "/**", Enter generates a JSDoc stub.
+            //   - If an inline closer exists ("/** */"), expand to a multi-line block without duplicating "*/".
+            //   - If already inside an existing JSDoc with "*" lines, insert a new " * " line (IDE-style).
+            // - If the caret is on a "*" line inside an unclosed JSDoc block, Enter inserts a new " * " line.
+            // - Multi-line selections are not special-cased (avoid surprising mass edits).
+
+            if (selection.hasSelection() && text != null && selection.getSelectedText(text).indexOf('\n') != -1) {
+                addText(Character.toString('\n') + getAutoIndentForEnter());
+                scrollToCursor();
+                return true;
+            }
+            
+            // Check for /** javadoc stub auto-generation
+            String before = getSelectionBeforeText();
+            int beforeTrimEnd = before.length();
+            while (beforeTrimEnd > 0) {
+                char ch = before.charAt(beforeTrimEnd - 1);
+                if (ch == ' ' || ch == '\t') {
+                    beforeTrimEnd--;
+                } else {
+                    break;
+                }
+            }
+
+            if (before.substring(0, beforeTrimEnd).endsWith("/**")) {
+                // Derive indentation from the logical source line (not soft-wrapped LineData).
+                String indent = getLogicalLineIndentAt(Math.max(0, Math.min(cursorPos, text != null ? text.length() : 0)));
+                
+                // Look ahead for a function declaration to generate smart JSDoc
+                String after = getSelectionAfterText();
+                
+                String afterTrimmed = after;
+                int wsLen = 0;
+                while (wsLen < afterTrimmed.length() && (afterTrimmed.charAt(wsLen) == ' ' || afterTrimmed.charAt(wsLen) == '\t')) {
+                    wsLen++;
+                }
+                if (wsLen < afterTrimmed.length() && afterTrimmed.charAt(wsLen) == '\n') {
+                    int idx = wsLen + 1;
+                    while (idx < afterTrimmed.length() && (afterTrimmed.charAt(idx) == ' ' || afterTrimmed.charAt(idx) == '\t')) {
+                        idx++;
+                    }
+                    if (afterTrimmed.startsWith("*/", idx)) {
+                        // Inline "/** */" -> expand to multi-line and keep the existing closer.
+                        String restAfterCloser = afterTrimmed.substring(Math.min(idx + 2, afterTrimmed.length()));
+                        String expanded = "\n" + indent + " * " + "\n" + indent + " */" + restAfterCloser;
+                        setText(before + expanded, true);
+                        int newCursorPos = before.length() + 1 + indent.length() + 3; // +1 for \n, +3 for " * "
+                        selection.reset(newCursorPos);
+                        scrollToCursor();
+                        return true;
+                    }
+                    if (idx < afterTrimmed.length() && afterTrimmed.charAt(idx) == '*') {
+                        int closerPos = afterTrimmed.indexOf("*/", idx);
+                        if (closerPos != -1) {
+                            // Already inside a multi-line JSDoc -> insert a new " * " line.
+                            addText("\n" + indent + " * ");
+                            int newCursorPos = before.length() + 1 + indent.length() + 3; // +1 for \n, +3 for " * "
+                            selection.reset(newCursorPos);
+                            scrollToCursor();
+                            return true;
+                        }
+                    }
+                }
+                if (afterTrimmed.substring(wsLen).startsWith("*/")) {
+                    // Inline "/** */" (same line) -> expand to multi-line and keep the existing closer.
+                    String restAfterCloser = afterTrimmed.substring(wsLen + 2);
+                    String expanded = "\n" + indent + " * " + "\n" + indent + " */" + restAfterCloser;
+                    setText(before + expanded, true);
+                    int newCursorPos = before.length() + 1 + indent.length() + 3; // +1 for \n, +3 for " * "
+                    selection.reset(newCursorPos);
+                    scrollToCursor();
+                    return true;
+                }
+                
+                // Look ahead for a function declaration to generate smart JSDoc
+                String javadocStub = generateJSDocStub(after, indent);
+                addText(javadocStub);
+                
+                // Position cursor after " * " on the description line
+                int newCursorPos = before.length() + 1 + indent.length() + 3; // +1 for \n, +3 for " * "
+                selection.reset(newCursorPos);
+                scrollToCursor();
+                return true;
+            }
+
+            if (text != null && !text.isEmpty()) {
+                int openPos = text.lastIndexOf("/**", Math.max(0, cursorPos - 1));
+                if (openPos != -1) {
+                    int closeBetween = text.indexOf("*/", openPos + 3);
+                    if (closeBetween == -1 || closeBetween >= cursorPos) {
+                        int lineStart = text.lastIndexOf('\n', Math.max(0, cursorPos - 1)) + 1;
+                        int lineEnd = text.indexOf('\n', lineStart);
+                        if (lineEnd == -1) {
+                            lineEnd = text.length();
+                        }
+                        String line = text.substring(lineStart, lineEnd);
+                        String trimmed = line.trim();
+                        if (trimmed.startsWith("*") && !trimmed.startsWith("*/")) {
+                            // Continuation line inside an unclosed JSDoc block.
+                            int openLineStart = text.lastIndexOf('\n', Math.max(0, openPos - 1)) + 1;
+                            int openLineEnd = text.indexOf('\n', openLineStart);
+                            if (openLineEnd == -1) {
+                                openLineEnd = text.length();
+                            }
+                            String openLine = text.substring(openLineStart, openLineEnd);
+                            String baseIndent = openLine.substring(0, IndentHelper.getLineIndent(openLine));
+                            addText("\n" + baseIndent + " * ");
+                            int newCursorPos = cursorPos + 1 + baseIndent.length() + 3;
+                            selection.reset(Math.min(newCursorPos, this.text.length()));
+                            scrollToCursor();
+                            return true;
+                        }
+                    }
+                }
+            }
+            
             int prevNonWs = cursorPos - 1;
             while (prevNonWs >= 0 && prevNonWs < (text != null ? text.length() : 0) && Character.isWhitespace(
-                text.charAt(prevNonWs))) {
+                    text.charAt(prevNonWs))) {
                 prevNonWs--;
             }
 
             if (prevNonWs >= 0 && cursorPos <= (text != null ? text.length() : 0) && text.charAt(prevNonWs) == '{') {
-                String indent = "";
-                for (LineData ld : this.container.lines) {
-                    if (prevNonWs >= ld.start && prevNonWs < ld.end) {
-                        indent = ld.text.substring(0, IndentHelper.getLineIndent(ld.text));
-                        break;
-                    }
-                }
-                if (indent == null)
-                    indent = "";
+                String indent = getLogicalLineIndentAt(prevNonWs);
                 String childIndent = indent + "    ";
-                String before = getSelectionBeforeText();
                 String after = getSelectionAfterText();
 
+                // Check if there's non-whitespace content on the current line after the cursor.
+                // If so, just add a newline + child indent without inserting a closing brace
+                // (the user is typing inside an existing expression).
                 int firstNewline = after.indexOf('\n');
                 String leadingSegment = firstNewline == -1 ? after : after.substring(0, firstNewline);
                 if (leadingSegment.trim().length() > 0) {
@@ -1376,7 +2077,14 @@ public class GuiScriptTextArea extends GuiNpcTextField {
                     return true;
                 }
 
-                boolean hasMatchingCloseSameIndent = false;
+                // Use BracketMatcher to determine if the opening '{' already has a
+                // properly matched closing '}' at the correct indent. Pure indent-based
+                // heuristics (scanning the 'after' substring) are unreliable for lambdas
+                // and nested callbacks; BracketMatcher uses stack-based pairing on the
+                // full text, then we verify the close brace sits at the same indent as
+                // the open brace's line — ensuring parent-scoped braces aren't mistaken
+                // for our own.
+                boolean hasMatchingClose = false;
                 try {
                     int openLineIdx = -1;
                     int bracePos = prevNonWs;
@@ -1391,24 +2099,42 @@ public class GuiScriptTextArea extends GuiNpcTextField {
                     if (openLineIdx >= 0) {
                         List<int[]> spans = BracketMatcher.computeBraceSpans(text, this.container.lines);
                         for (int[] span : spans) {
-                            int spanOpen = span[1];
-                            int spanClose = span[2];
-                            if (spanOpen == openLineIdx) {
-                                int closeIndent = IndentHelper.getLineIndent(this.container.lines.get(spanClose).text);
-                                if (closeIndent == indent.length()) {
-                                    hasMatchingCloseSameIndent = true;
+                            if (span[1] == openLineIdx) {
+                                int closeLineIdx = span[2];
+                                if (closeLineIdx < this.container.lines.size()) {
+                                    int closeIndent = IndentHelper.getLineIndent(
+                                            this.container.lines.get(closeLineIdx).text);
+                                    // <= handles multi-line declarations where '{' sits on a
+                                    // continuation line with higher indent than the closing '}'
+                                    if (closeIndent <= indent.length()) {
+                                        hasMatchingClose = true;
+                                    }
                                 }
                                 break;
                             }
                         }
                     }
                 } catch (Exception ex) {
-                    hasMatchingCloseSameIndent = false;
+                    hasMatchingClose = false;
                 }
 
-                if (hasMatchingCloseSameIndent) {
+                if (hasMatchingClose) {
                     addText("\n" + childIndent);
                     scrollToCursor();
+                } else if (isLambdaOpening(prevNonWs, text)) {
+                    int parenPos = findLambdaParentParen(prevNonWs, text);
+                    if (parenPos >= 0) {
+                        String parentIndent = getParentIndentForLambda(parenPos, container.lines);
+                        String insert = "\n" + childIndent + "\n" + parentIndent + "});";
+                        setText(before + insert + after);
+                        selection.reset(before.length() + 1 + childIndent.length());
+                        scrollToCursor();
+                    } else {
+                        String insert = "\n" + childIndent + "\n" + indent + "}";
+                        setText(before + insert + after);
+                        selection.reset(before.length() + 1 + childIndent.length());
+                        scrollToCursor();
+                    }
                 } else {
                     String insert = "\n" + childIndent + "\n" + indent + "}";
                     setText(before + insert + after);
@@ -1425,6 +2151,116 @@ public class GuiScriptTextArea extends GuiNpcTextField {
 
         return false;
     }
+    
+    /**
+     * Generates a JSDoc stub for a function declaration.
+     * Looks at the text after the cursor to find function signature and generates
+     * appropriate @param and @return tags.
+     * 
+     * @param after Text after the /** to search for function
+     * @param indent Current line indentation
+     * @return The JSDoc stub string including newlines
+     */
+    private String generateJSDocStub(String after, String indent) {
+        StringBuilder stub = new StringBuilder();
+        stub.append("\n").append(indent).append(" * ");  // Description line
+        
+        // Try to find a function/method declaration or field declaration following the JSDoc
+        // Skip whitespace and newlines
+        String trimmed = after.replaceFirst("^[\\s\\n\\r]*", "");
+        
+        // First, try to match function/method pattern
+        java.util.regex.Pattern funcPattern = java.util.regex.Pattern.compile(
+            // Group 1: Optional return type (Java) or 'function' keyword (JS)
+            "^(?:(\\w+(?:<[^>]+>)?|function)\\s+)?" +
+            // Group 2: Method/function name  
+            "(\\w+)\\s*" +
+            // Group 3: Parameters inside parentheses
+            "\\(([^)]*)\\)"
+        );
+        
+        java.util.regex.Matcher funcMatcher = funcPattern.matcher(trimmed);
+        if (funcMatcher.find()) {
+            // Handle function/method
+            String returnOrKeyword = funcMatcher.group(1);
+            String funcName = funcMatcher.group(2);
+            String paramsStr = funcMatcher.group(3) != null ? funcMatcher.group(3).trim() : "";
+            
+            // Determine if this is JavaScript (function keyword or no return type)
+            boolean isJS = "function".equals(returnOrKeyword) || returnOrKeyword == null ||
+                (container != null && container.getDocument() != null && container.getDocument().isJavaScript());
+            
+            // Parse parameters
+            if (!paramsStr.isEmpty()) {
+                String[] params = paramsStr.split(",");
+                for (String param : params) {
+                    param = param.trim();
+                    if (param.isEmpty()) continue;
+                    
+                    String paramName;
+                    String paramType = "any";
+                    
+                    // Split on whitespace to get type and name
+                    String[] parts = param.split("\\s+");
+                    if (parts.length >= 2) {
+                        // Java style: Type name
+                        paramType = parts[parts.length - 2];
+                        paramName = parts[parts.length - 1];
+                    } else {
+                        // JS style: just name
+                        paramName = parts[0];
+                    }
+                    
+                    // Remove any trailing array brackets or varargs
+                    paramName = paramName.replaceAll("[\\[\\]\\.]", "");
+                    
+                    if (isJS) {
+                        stub.append("\n").append(indent).append(" * @param {").append(paramType).append("} ").append(paramName);
+                    } else {
+                        stub.append("\n").append(indent).append(" * @param ").append(paramName);
+                    }
+                }
+            }
+            
+            // Add @return/@returns tag if applicable
+            if (returnOrKeyword != null && !"function".equals(returnOrKeyword) && !"void".equals(returnOrKeyword)) {
+                if (isJS) {
+                    stub.append("\n").append(indent).append(" * @returns {").append(returnOrKeyword).append("}");
+                } else {
+                    stub.append("\n").append(indent).append(" * @return");
+                }
+            } else if (isJS) {
+                // For JS functions without explicit return type, add empty @returns
+                stub.append("\n").append(indent).append(" * @returns {any}");
+            }
+        } else {
+            // Try to match field declaration: [modifiers] Type name or var/let/const name
+            java.util.regex.Pattern fieldPattern = java.util.regex.Pattern.compile(
+                "^(?:(?:public|private|protected|static|final|var|let|const)\\s+)*" + // Optional modifiers
+                "(\\w+(?:<[^>]+>)?)\\s+" +  // Type (Group 1)
+                "(\\w+)" +                     // Field name (Group 2)
+                "(?:\\s*=|\\s*;)"              // Followed by = or ;
+            );
+            
+            java.util.regex.Matcher fieldMatcher = fieldPattern.matcher(trimmed);
+            if (fieldMatcher.find()) {
+                String fieldType = fieldMatcher.group(1);
+                
+                // Check if this is JavaScript
+                boolean isJS = container != null && container.getDocument() != null && container.getDocument().isJavaScript();
+                
+                if (isJS && fieldType != null) {
+                    // For JS fields, add @type annotation
+                    stub.append("\n").append(indent).append(" * @type {").append("any").append("}");
+                }
+            }
+        }
+        
+        // Close the JSDoc block
+        stub.append("\n").append(indent).append(" */");
+        
+        return stub.toString();
+    }
 
     /**
      * Handles deletion keys: Delete, Backspace, and Ctrl+Backspace.
@@ -1439,7 +2275,7 @@ public class GuiScriptTextArea extends GuiNpcTextField {
             if (!s.isEmpty() && !selection.hasSelection())
                 // remove single character after caret when nothing is selected
                 s = s.substring(1);
-            setText(getSelectionBeforeText() + s);
+            setText(getSelectionBeforeText() + s, true); // Use atomic undo
             // Keep caret at same start selection
             selection.reset(selection.getStartSelection());
             return true;
@@ -1447,46 +2283,33 @@ public class GuiScriptTextArea extends GuiNpcTextField {
 
         // CTRL+BACKSPACE: delete to previous word or whitespace boundary.
         if (isKeyComboCtrlBackspace(i)) {
-            String s = getSelectionBeforeText();
+            String before = getSelectionBeforeText();
             if (selection.getStartSelection() > 0 && !selection.hasSelection()) {
-                int nearestCondition = selection.getCursorPosition();
-                int g;
-                // If the char left of caret is whitespace, find the first non-space to the left;
-                // otherwise find first whitespace/newline to the left (word boundary).
-                boolean cursorInWhitespace = Character.isWhitespace(s.charAt(selection.getCursorPosition() - 1));
-                if (cursorInWhitespace) {
-                    // Scan left until non-whitespace (start of previous word)
-                    for (g = selection.getCursorPosition() - 1; g >= 0; g--) {
-                        char currentChar = s.charAt(g);
-                        if (!Character.isWhitespace(currentChar)) {
-                            nearestCondition = g;
-                            break;
-                        }
-                        if (g == 0) {
-                            nearestCondition = 0;
-                        }
-                    }
+                int pos = selection.getCursorPosition();
+                int g = pos;
+
+                // Helper: treat letters, digits and underscore as word characters
+                java.util.function.IntPredicate isWordChar = ch -> Character.isLetterOrDigit(ch) || ch == '_';
+
+                // If caret is after whitespace, delete contiguous whitespace first
+                char left = before.charAt(pos - 1);
+                if (Character.isWhitespace(left)) {
+                    while (g - 1 >= 0 && Character.isWhitespace(before.charAt(g - 1)))
+                        g--;
+                } else if (isWordChar.test(left)) {
+                    // Delete contiguous word characters (letters/digits/_)
+                    while (g - 1 >= 0 && isWordChar.test(before.charAt(g - 1)))
+                        g--;
                 } else {
-                    // Scan left until whitespace/newline is found (word boundary)
-                    for (g = selection.getCursorPosition() - 1; g >= 0; g--) {
-                        char currentChar = s.charAt(g);
-                        if (Character.isWhitespace(currentChar) || currentChar == '\n') {
-                            nearestCondition = g;
-                            break;
-                        }
-                        if (g == 0) {
-                            nearestCondition = 0;
-                        }
-                    }
+                    // Delete contiguous non-word, non-whitespace characters (punctuation)
+                    while (g - 1 >= 0 && !Character.isWhitespace(before.charAt(g - 1)) && !isWordChar.test(before.charAt(g - 1)))
+                        g--;
                 }
 
-                // Trim the prefix up to the discovered boundary
-                s = s.substring(0, nearestCondition);
-                // Adjust selection start to match removed characters
-                selection.setStartSelection(
-                    selection.getStartSelection() - (selection.getCursorPosition() - nearestCondition));
+                before = before.substring(0, g);
+                selection.setStartSelection(selection.getStartSelection() - (pos - g));
             }
-            setText(s + getSelectionAfterText());
+            setText(before + getSelectionAfterText(), true); // Use atomic undo
             selection.reset(selection.getStartSelection());
             return true;
         }
@@ -1501,7 +2324,7 @@ public class GuiScriptTextArea extends GuiNpcTextField {
             // 1) selection deletion
             if (selection.hasSelection()) {
                 String s = getSelectionBeforeText();
-                setText(s + getSelectionAfterText());
+                setText(s + getSelectionAfterText(), true); // Use atomic undo
                 selection.reset(selection.getStartSelection());
                 scrollToCursor();
                 return true;
@@ -1512,21 +2335,17 @@ public class GuiScriptTextArea extends GuiNpcTextField {
                 return true;
             }
 
-            // If the current line is whitespace-only, delete the whole line
-            // (including the trailing newline if present). This makes Backspace
-            // intuitive on blank/indented lines outside any recognized scope.
+            // If the current line is whitespace-only, remove it by deleting the
+            // preceding newline and the line's content, but preserve any trailing
+            // newline so the following line (e.g. a closing brace) stays in place.
             LineData currCheck = selection.findCurrentLine(container.lines);
             if (currCheck != null && currCheck.text.trim().length() == 0) {
-                int removeEnd = text.indexOf('\n', currCheck.start - 1);
-                if (removeEnd == -1) {
-                    removeEnd = text.length();
-                } else {
-                    removeEnd = removeEnd + 1; // include the newline
-                }
-                String before = text.substring(0, ValueUtil.clamp(currCheck.start - 1, 0, text.length()));
-                String after = removeEnd <= text.length() ? text.substring(removeEnd) : "";
-                setText(before + after);
-                int newCursor = Math.max(0, currCheck.start - 1);
+                int removeStart = ValueUtil.clamp(currCheck.start - 1, 0, text.length());
+                int contentEnd = Math.min(currCheck.start + currCheck.text.length(), text.length());
+                String before = text.substring(0, removeStart);
+                String after = text.substring(contentEnd);
+                setText(before + after, true);
+                int newCursor = Math.max(0, removeStart);
                 selection.reset(newCursor);
                 scrollToCursor();
                 return true;
@@ -1554,7 +2373,7 @@ public class GuiScriptTextArea extends GuiNpcTextField {
                         }
                         String before = text.substring(0, curr.start);
                         String after = removeEnd <= text.length() ? text.substring(removeEnd) : "";
-                        setText(before + after);
+                        setText(before + after, true); // Use atomic undo
                         // Place caret at end of previous line
                         int newCursor = Math.max(0, curr.start - 1);
                         selection.reset(newCursor);
@@ -1572,16 +2391,16 @@ public class GuiScriptTextArea extends GuiNpcTextField {
                             char lastChar = before.charAt(before.length() - 1);
                             char firstChar = content.charAt(0);
                             // Avoid adding space when punctuation/brackets are adjacent
-                            if (!Character.isWhitespace(lastChar) &&
+                            if (!Character.isWhitespace(lastChar) && 
                                 lastChar != '{' && lastChar != '(' && lastChar != '[' &&
-                                firstChar != '}' && firstChar != ')' && firstChar != ']' &&
+                                firstChar != '}' && firstChar != ')' && firstChar != ']' && 
                                 firstChar != ';' && firstChar != ',' && firstChar != '.' &&
                                 firstChar != '\n') {
                                 spacer = " ";
                             }
                         }
 
-                        setText(before + spacer + content);
+                        setText(before + spacer + content, true); // Use atomic undo
                         int newCursor = before.length() + spacer.length();
                         selection.reset(newCursor);
                         scrollToCursor();
@@ -1595,15 +2414,15 @@ public class GuiScriptTextArea extends GuiNpcTextField {
             if (selection.getStartSelection() > 0 && selection.getStartSelection() < text.length()) {
                 char prev = text.charAt(selection.getStartSelection() - 1);
                 char nextc = text.charAt(selection.getStartSelection());
-                if ((prev == '(' && nextc == ')') ||
-                    (prev == '[' && nextc == ']') ||
-                    (prev == '{' && nextc == '}') ||
-                    (prev == '\'' && nextc == '\'') ||
+                if ((prev == '(' && nextc == ')') || 
+                    (prev == '[' && nextc == ']') || 
+                    (prev == '{' && nextc == '}') || 
+                    (prev == '\'' && nextc == '\'') || 
                     (prev == '"' && nextc == '"')) {
                     String before = text.substring(0, selection.getStartSelection() - 1);
                     String after = selection.getStartSelection() + 1 < text.length() ? text.substring(
-                        selection.getStartSelection() + 1) : "";
-                    setText(before + after);
+                            selection.getStartSelection() + 1) : "";
+                    setText(before + after, true); // Use atomic undo
                     selection.setStartSelection(selection.getStartSelection() - 1);
                     selection.reset(selection.getStartSelection());
                     scrollToCursor();
@@ -1615,9 +2434,11 @@ public class GuiScriptTextArea extends GuiNpcTextField {
             String s = getSelectionBeforeText();
             s = s.substring(0, s.length() - 1);
             selection.setStartSelection(selection.getStartSelection() - 1);
-            setText(s + getSelectionAfterText());
+            setText(s + getSelectionAfterText(), true); // Use atomic undo
             selection.reset(selection.getStartSelection());
             scrollToCursor();
+            // Notify autocomplete of deletion
+            autocompleteManager.onDeleteKey(text, selection.getCursorPosition());
             return true;
         }
 
@@ -1763,51 +2584,401 @@ public class GuiScriptTextArea extends GuiNpcTextField {
         if (ChatAllowedCharacters.isAllowedCharacter(c)) {
             String before = getSelectionBeforeText();
             String after = getSelectionAfterText();
+            int cursorPos = selection.getCursorPosition();
 
-            // If the user types a closing character and that same closer is
-            // already immediately after the caret, move caret past it instead
-            // of inserting another closer. This prevents duplicate closers
-            // when the editor auto-inserts pairs.
-            if ((c == ')' || c == ']' || c == '"' || c == '\'') && after.length() > 0 && after.charAt(0) == c) {
-                // Move caret forward by one (skip over existing closer)
+            // Diamond/generic angle bracket handling
+            if (c == '<') {
+                if (!container.getDocument().isExcludedInclusive(cursorPos) && isGenericContext(before)) {
+                    if (hasUnmatchedCloserAhead(after, '<', '>')) {
+                        // There's already an unmatched '>' ahead — just insert '<'
+                        setText(before + "<" + after, true);
+                        selection.reset(before.length() + 1);
+                    } else {
+                        setText(before + "<>" + after, true);
+                        selection.reset(before.length() + 1);
+                    }
+                    scrollToCursor();
+                    autocompleteManager.onCharTyped(c, text, cursorPos);
+                    return true;
+                }
+            }
+
+            if (c == '>') {
+                if (after.length() > 0 && after.charAt(0) == '>') {
+                    if (shouldSkipAngleBracketClose(before)) {
+                        selection.reset(before.length() + 1);
+                        scrollToCursor();
+                        autocompleteManager.onCharTyped(c, text, cursorPos);
+                        return true;
+                    }
+                }
+            }
+
+            if ((c == ')' || c == ']' || c == '}') && after.length() > 0 && after.charAt(0) == c) {
                 selection.reset(before.length() + 1);
                 scrollToCursor();
+                autocompleteManager.onCharTyped(c, text, cursorPos);
+                return true;
+            }
+
+            if (c == '"' || c == '\'') {
+                if (after.length() > 0 && after.charAt(0) == c) {
+                    // Move caret forward by one (skip over existing closer)
+                    selection.reset(before.length() + 1);
+                    scrollToCursor();
+                    // Notify autocomplete of the character
+                    autocompleteManager.onCharTyped(c, text, cursorPos);
+                    return true;
+                }
+
+                // Auto-pair only when it looks like we're starting a new string. If the current
+                // logical line already has an unclosed quote of this type, treat the typed quote
+                // as a closer to avoid producing triple quotes.
+                boolean allowAutoPair = !container.getDocument().isExcludedInclusive(cursorPos)
+                        && !isLikelyClosingQuote(before, c);
+
+                if (allowAutoPair) {
+                    if (c == '"') {
+                        setText(before + "\"\"" + after, true);
+                    } else {
+                        setText(before + "''" + after, true);
+                    }
+                    selection.reset(before.length() + 1);
+                    scrollToCursor();
+                    autocompleteManager.onCharTyped(c, text, cursorPos);
+                    return true;
+                }
+
+                addText(Character.toString(c));
+                scrollToCursor();
+                autocompleteManager.onCharTyped(c, text, cursorPos);
                 return true;
             }
 
             // Auto-pair insertion: when opening a quote/brace/bracket is typed,
             // insert a matching closer and place caret between the pair.
-            if (c == '"') {
-                setText(before + "\"\"" + after);
-                selection.reset(before.length() + 1);
-                scrollToCursor();
-                return true;
+            // But only if the current position is not excluded (e.g., inside a comment or string)
+            if (!container.getDocument().isExcludedInclusive(cursorPos)) {
+                if (c == '[') {
+                    if (hasUnmatchedCloserAhead(after, '[', ']')) {
+                        setText(before + c + after, true);
+                        selection.reset(before.length() + 1);
+                        scrollToCursor();
+                        autocompleteManager.onCharTyped(c, text, cursorPos);
+                        return true;
+                    }
+                    setText(before + "[]" + after, true);
+                    selection.reset(before.length() + 1);
+                    scrollToCursor();
+                    // Notify autocomplete of the character
+                    autocompleteManager.onCharTyped(c, text, cursorPos);
+                    return true;
+                }
+                if (c == '(') {
+                    if (hasUnmatchedCloserAhead(after, '(', ')')) {
+                        setText(before + c + after, true);
+                        selection.reset(before.length() + 1);
+                        scrollToCursor();
+                        autocompleteManager.onCharTyped(c, text, cursorPos);
+                        return true;
+                    }
+                    setText(before + "()" + after, true);
+                    selection.reset(before.length() + 1);
+                    scrollToCursor();
+                    // Notify autocomplete of the character
+                    autocompleteManager.onCharTyped(c, text, cursorPos);
+                    return true;
+                }
+                if (c == '{') {
+                    if (hasUnmatchedCloserAhead(after, '{', '}')) {
+                        setText(before + c + after, true);
+                        selection.reset(before.length() + 1);
+                        scrollToCursor();
+                        autocompleteManager.onCharTyped(c, text, cursorPos);
+                        return true;
+                    }
+                }
             }
-            if (c == '\'') {
-                setText(before + "''" + after);
-                selection.reset(before.length() + 1);
-                scrollToCursor();
-                return true;
-            }
-            if (c == '[') {
-                setText(before + "[]" + after);
-                selection.reset(before.length() + 1);
-                scrollToCursor();
-                return true;
-            }
-            if (c == '(') {
-                setText(before + "()" + after);
-                selection.reset(before.length() + 1);
-                scrollToCursor();
-                return true;
-            }
-
             // Default insertion for printable characters: insert at caret (replacing selection)
             addText(Character.toString(c));
             scrollToCursor();
+            // Notify autocomplete of the character
+            autocompleteManager.onCharTyped(c, text, cursorPos);
             return true;
         }
         return false;
+    }
+
+    private boolean isLikelyClosingQuote(String before, char quote) {
+        if (before == null || before.isEmpty()) {
+            return false;
+        }
+        int lineStart = before.lastIndexOf('\n');
+        int start = lineStart == -1 ? 0 : lineStart + 1;
+        int count = 0;
+        for (int i = start; i < before.length(); i++) {
+            if (before.charAt(i) == quote && !isEscaped(before, i)) {
+                count++;
+            }
+        }
+        return (count % 2) == 1;
+    }
+
+    private boolean isEscaped(String s, int index) {
+        int backslashes = 0;
+        for (int i = index - 1; i >= 0 && s.charAt(i) == '\\'; i--) {
+            backslashes++;
+        }
+        return (backslashes % 2) == 1;
+    }
+
+    private boolean isGenericContext(String before) {
+        if (before == null || before.isEmpty()) return false;
+
+        int i = before.length() - 1;
+        while (i >= 0 && (before.charAt(i) == ' ' || before.charAt(i) == '\t')) {
+            i--;
+        }
+        if (i < 0) return false;
+
+        char last = before.charAt(i);
+
+        if (last == '>' || last == ')' || last == ']') return true;
+        if (last == ',') return true;
+
+        if (Character.isJavaIdentifierPart(last)) {
+            int end = i + 1;
+            while (i >= 0 && Character.isJavaIdentifierPart(before.charAt(i))) {
+                i--;
+            }
+            String word = before.substring(i + 1, end);
+
+            if (isComparisonKeyword(word)) return false;
+            if (isNumericLiteral(word)) return false;
+
+            return true;
+        }
+
+        return false;
+    }
+
+    private boolean isComparisonKeyword(String word) {
+        return "if".equals(word) || "while".equals(word) || "for".equals(word)
+                || "return".equals(word) || "else".equals(word) || "case".equals(word)
+                || "assert".equals(word) || "throw".equals(word) || "true".equals(word)
+                || "false".equals(word) || "null".equals(word);
+    }
+
+    private boolean isNumericLiteral(String word) {
+        if (word.isEmpty()) return false;
+        char first = word.charAt(0);
+        return first >= '0' && first <= '9';
+    }
+
+    private boolean shouldSkipAngleBracketClose(String before) {
+        if (before == null || before.isEmpty()) return false;
+        int depth = 0;
+        boolean inLineComment = false;
+        boolean inBlockComment = false;
+        boolean inString = false;
+        boolean escape = false;
+        char stringDelimiter = 0;
+
+        for (int i = 0; i < before.length(); i++) {
+            char c = before.charAt(i);
+            char next = i + 1 < before.length() ? before.charAt(i + 1) : 0;
+
+            if (inString) {
+                if (escape) { escape = false; }
+                else if (c == '\\') { escape = true; }
+                else if (c == stringDelimiter || c == '\n') { inString = false; }
+                continue;
+            }
+            if (inBlockComment) {
+                if (c == '*' && next == '/') { inBlockComment = false; i++; }
+                continue;
+            }
+            if (inLineComment) {
+                if (c == '\n') { inLineComment = false; }
+                continue;
+            }
+            if (c == '/' && next == '/') { inLineComment = true; i++; continue; }
+            if (c == '/' && next == '*') { inBlockComment = true; i++; continue; }
+            if (c == '"' || c == '\'') { inString = true; stringDelimiter = c; escape = false; continue; }
+
+            if (c == '<') depth++;
+            else if (c == '>') depth--;
+        }
+        return depth > 0;
+    }
+
+    private boolean hasUnmatchedCloserAhead(String after, char opener, char closer) {
+        int balance = 0;
+        int len = after.length();
+        for (int idx = 0; idx < len; idx++) {
+            char ch = after.charAt(idx);
+            if (ch == '\n') break;
+            // Bail out at string / comment boundaries to avoid false matches
+            if (ch == '"' || ch == '\'') return false;
+            if (ch == '/' && idx + 1 < len) {
+                char next = after.charAt(idx + 1);
+                if (next == '/' || next == '*') return false;
+            }
+            if (ch == opener) {
+                balance++;
+            } else if (ch == closer) {
+                if (balance == 0) return true;
+                balance--;
+            }
+        }
+        return false;
+    }
+
+    private String getLogicalLineIndentAt(int pos) {
+        if (text == null || text.isEmpty()) {
+            return "";
+        }
+        int safePos = Math.max(0, Math.min(pos, text.length()));
+        int lineStart = text.lastIndexOf('\n', Math.max(0, safePos - 1)) + 1;
+        int p = lineStart;
+        while (p < text.length()) {
+            char ch = text.charAt(p);
+            if (ch == ' ' || ch == '\t') {
+                p++;
+            } else {
+                break;
+            }
+        }
+        return text.substring(lineStart, p);
+    }
+
+    private boolean isLambdaOpening(int bracePos, String fullText) {
+        if (fullText == null || bracePos <= 1) {
+            return false;
+        }
+        int scan = bracePos - 1;
+        while (scan >= 0 && (fullText.charAt(scan) == ' ' || fullText.charAt(scan) == '\t')) {
+            scan--;
+        }
+        if (scan < 1) {
+            return false;
+        }
+        char c1 = fullText.charAt(scan - 1);
+        char c2 = fullText.charAt(scan);
+        return (c1 == '-' && c2 == '>') || (c1 == '=' && c2 == '>');
+    }
+
+    // Reverse-scans from bracePos to find the unmatched '(' that this lambda is an
+    // argument of. Properly handles nested parens/braces, strings, and comments.
+    // Returns the position of the enclosing '(' or -1 if not found.
+    private int findLambdaParentParen(int bracePos, String fullText) {
+        if (fullText == null || bracePos <= 0) {
+            return -1;
+        }
+
+        int parenDepth = 0;
+        int braceDepth = 0;
+        boolean inString = false;
+        boolean inBlockComment = false;
+        char stringDelim = 0;
+
+        for (int i = bracePos - 1; i >= 0; i--) {
+            char c = fullText.charAt(i);
+            char prev = i > 0 ? fullText.charAt(i - 1) : 0;
+
+            // Reverse block-comment: entered at '*/', exits at '/*'
+            if (inBlockComment) {
+                if (c == '*' && prev == '/') {
+                    inBlockComment = false;
+                    i--;
+                }
+                continue;
+            }
+
+            if (c == '/' && prev == '*') {
+                inBlockComment = true;
+                i--;
+                continue;
+            }
+
+            if (inString) {
+                if (c == stringDelim) {
+                    int bs = 0;
+                    for (int j = i - 1; j >= 0 && fullText.charAt(j) == '\\'; j--) {
+                        bs++;
+                    }
+                    if (bs % 2 == 0) {
+                        inString = false;
+                    }
+                }
+                continue;
+            }
+
+            if (c == '"' || c == '\'' || c == '`') {
+                inString = true;
+                stringDelim = c;
+                continue;
+            }
+
+            // For line comments: when scanning backwards and hitting a newline,
+            // check if the preceding line contains a // comment. If so, skip
+            // backwards past it to avoid counting brackets inside comments.
+            if (c == '\n') {
+                int lineStart = fullText.lastIndexOf('\n', i - 1) + 1;
+                int commentIdx = findLineCommentStart(fullText, lineStart, i);
+                if (commentIdx >= 0) {
+                    i = commentIdx;
+                }
+                continue;
+            }
+
+            if (c == '}') {
+                braceDepth++;
+            } else if (c == '{') {
+                if (braceDepth > 0) {
+                    braceDepth--;
+                }
+                if (braceDepth == 0) {
+                    return -1;
+                }
+            } else if (c == ')') {
+                parenDepth++;
+            } else if (c == '(') {
+                if (parenDepth > 0) {
+                    parenDepth--;
+                } else {
+                    return i;
+                }
+            }
+        }
+        return -1;
+    }
+
+    private int findLineCommentStart(String text, int lineStart, int lineEnd) {
+        boolean inStr = false;
+        char strDelim = 0;
+        for (int i = lineStart; i < lineEnd; i++) {
+            char c = text.charAt(i);
+            if (inStr) {
+                if (c == strDelim && (i == 0 || text.charAt(i - 1) != '\\')) {
+                    inStr = false;
+                }
+                continue;
+            }
+            if (c == '"' || c == '\'' || c == '`') {
+                inStr = true;
+                strDelim = c;
+                continue;
+            }
+            if (c == '/' && i + 1 < lineEnd && text.charAt(i + 1) == '/') {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private String getParentIndentForLambda(int parenPos, List<LineData> lines) {
+        return getLogicalLineIndentAt(parenPos);
     }
 
     private boolean isShiftKeyDown() {
@@ -1816,10 +2987,10 @@ public class GuiScriptTextArea extends GuiNpcTextField {
 
     // ==================== COMMENT TOGGLING ====================
     // Uses CommentHandler helper for comment operations
-
+    
     private void toggleCommentSelection() {
         CommentHandler.SelectionToggleResult result = CommentHandler.toggleCommentSelection(
-            text, container.lines, selection.getStartSelection(), selection.getEndSelection());
+                text, container.lines, selection.getStartSelection(), selection.getEndSelection());
         setText(result.newText);
         selection.setStartSelection(result.newStartSelection);
         selection.setEndSelection(result.newEndSelection);
@@ -1827,15 +2998,17 @@ public class GuiScriptTextArea extends GuiNpcTextField {
 
     private void toggleCommentLineAtCursor() {
         CommentHandler.SingleLineToggleResult result = CommentHandler.toggleCommentAtCursor(
-            text, container.lines, selection.getCursorPosition());
+                text, container.lines, selection.getCursorPosition());
         setText(result.newText);
         setCursor(result.newCursorPosition, false);
     }
-
-    public boolean closeOnEsc() {
-        return !KEYS_OVERLAY.isVisible() && !searchBar.isVisible() && !goToLineDialog.isVisible() && !renameHandler.isActive();
+    
+    public boolean closeOnEsc(){
+        return !KEYS_OVERLAY.isVisible() && !searchBar.isVisible() && !goToLineDialog.isVisible()
+                && !renameHandler.isActive() && !autocompleteManager.isVisible()
+                && !(hoverState.isTooltipVisible() && (hoverState.hasOverriddenPosition() || hoverState.hasOverriddenSize()));
     }
-
+    
     // ==================== KEYBOARD MODIFIERS ====================
 
     private boolean isAltKeyDown() {
@@ -1883,7 +3056,7 @@ public class GuiScriptTextArea extends GuiNpcTextField {
         return IndentHelper.getAutoIndentForEnter(currentLine.text, selection.getCursorPosition() - currentLine.start);
     }
     // ==================== TEXT FORMATTING ====================
-
+    
     private int getTabSize() {
         return IndentHelper.TAB_SIZE;
     }
@@ -1893,13 +3066,15 @@ public class GuiScriptTextArea extends GuiNpcTextField {
     }
 
     private void formatText() {
-        // Calculate viewport width for line wrapping (account for gutter and scrollbar)
-        int viewportWidth = this.width - LINE_NUMBER_GUTTER_WIDTH - 10;
-        IndentHelper.FormatResult result = IndentHelper.formatText(text, selection.getCursorPosition(), viewportWidth);
+        int viewportPixels = this.width - LINE_NUMBER_GUTTER_WIDTH - 10;
+        int avgCharWidth = Math.max(1, ClientProxy.Font.width("abcdefghijklmnopqrstuvwxyz") / 26);
+        int viewportChars = (int) (viewportPixels * 0.8f / avgCharWidth);
+        int maxLineLength = Math.max(60, Math.min(viewportChars, 120));
+        IndentHelper.FormatResult result = IndentHelper.formatText(text, selection.getCursorPosition(), maxLineLength);
         setText(result.text);
         selection.reset(Math.max(0, Math.min(result.cursorPosition, this.text.length())));
     }
-
+    
     // ==================== TAB HANDLING ====================
 
     private void handleTab() {
@@ -1961,43 +3136,24 @@ public class GuiScriptTextArea extends GuiNpcTextField {
             return;
         int tab = getTabSize();
         int indentLen = IndentHelper.getLineIndent(currentLine.text);
-        int textStartPos = currentLine.start + indentLen;
 
-        if (selection.getCursorPosition() <= textStartPos) {
-            // Cursor before any text: reduce leading indent to previous tab stop
-            int targetIndent = Math.max(0, ((indentLen - 1) / tab) * tab);
-            String newIndent = repeatSpace(targetIndent);
-            String rest = currentLine.text.substring(indentLen);
-            String before = text.substring(0, currentLine.start);
-            int contentEnd = Math.min(currentLine.start + currentLine.text.length(), text.length());
-            int sepEnd = Math.min(currentLine.end, text.length());
-            String sep = contentEnd < sepEnd ? text.substring(contentEnd, sepEnd) : "";
-            String after = text.substring(sepEnd);
-            setText(before + newIndent + rest + sep + after);
-            int newCursor = currentLine.start + targetIndent;
-            selection.reset(Math.min(newCursor, this.text.length()));
-        } else {
-            // Cursor after start of text: remove up to previous tab stop worth of spaces immediately before cursor
-            int column = selection.getCursorPosition() - currentLine.start;
-            int mod = column % tab;
-            int toRemove = mod == 0 ? tab : mod;
-            int removed = 0;
-            int pos = selection.getCursorPosition() - 1;
-            while (pos >= currentLine.start && removed < toRemove && text.charAt(pos) == ' ') {
-                pos--;
-                removed++;
-            }
-            if (removed > 0) {
-                int removeStart = pos + 1;
-                String before = text.substring(0, removeStart);
-                String after = text.substring(selection.getCursorPosition());
-                setText(before + after);
-                int newCursor = removeStart;
-                selection.reset(Math.min(newCursor, this.text.length()));
-            }
-        }
+        if (indentLen == 0)
+            return;
+
+        int targetIndent = Math.max(0, ((indentLen - 1) / tab) * tab);
+        int removed = indentLen - targetIndent;
+        String newIndent = repeatSpace(targetIndent);
+        String rest = currentLine.text.substring(indentLen);
+        String before = text.substring(0, currentLine.start);
+        int contentEnd = Math.min(currentLine.start + currentLine.text.length(), text.length());
+        int sepEnd = Math.min(currentLine.end, text.length());
+        String sep = contentEnd < sepEnd ? text.substring(contentEnd, sepEnd) : "";
+        String after = text.substring(sepEnd);
+        setText(before + newIndent + rest + sep + after);
+        int newCursor = Math.max(currentLine.start, selection.getCursorPosition() - removed);
+        selection.reset(Math.min(newCursor, this.text.length()));
     }
-
+    
     // ==================== CURSOR MANAGEMENT ====================
 
     private void setCursor(int i, boolean select) {
@@ -2006,7 +3162,7 @@ public class GuiScriptTextArea extends GuiNpcTextField {
 
     private void addText(String s) {
         int insertPos = selection.getStartSelection();
-        this.setText(this.getSelectionBeforeText() + s + this.getSelectionAfterText());
+        this.setText(this.getSelectionBeforeText() + s + this.getSelectionAfterText(), true); // Use atomic undo for typing
         selection.afterTextInsert(insertPos + s.length());
     }
 
@@ -2025,32 +3181,121 @@ public class GuiScriptTextArea extends GuiNpcTextField {
     public String getSelectionAfterText() {
         return selection.getTextAfter(text);
     }
-
+    
     // ==================== MOUSE HANDLING ====================
 
     public void mouseClicked(int xMouse, int yMouse, int mouseButton) {
+        // HIGHEST PRIORITY: tooltip panel absorbs all clicks — no click-through to panels beneath it
+        if (hoverState.isTooltipVisible() && hoverState.isMouseOverTooltipPanel(xMouse, yMouse)) {
+            if (mouseButton == 0) {
+                if (hoverState.isMouseOverResizeHandle(xMouse, yMouse)) {
+                    hoverState.startTooltipResize(xMouse, yMouse);
+                } else if (hoverState.isMouseOverScrollbarThumb(xMouse, yMouse)) {
+                    hoverState.startScrollbarDrag(yMouse);
+                } else {
+                    hoverState.startTooltipDrag(xMouse, yMouse);
+                }
+            }
+            return; // consume — nothing below receives this click
+        }
+        // M1 outside a dragged/resized tooltip — dismiss it and fall through to editor
+        if (mouseButton == 0 && (hoverState.hasOverriddenPosition() || hoverState.hasOverriddenSize())
+                && !hoverState.isMouseOverTooltipPanel(xMouse, yMouse)) {
+            hoverState.clearHover();
+        }
+        // Check autocomplete menu clicks first
+        if (autocompleteManager.isVisible() && autocompleteManager.mouseClicked(xMouse, yMouse, mouseButton)) {
+            return;
+        }
+        
+        // Dismiss autocomplete if clicking elsewhere
+        if (autocompleteManager.isVisible()) {
+            autocompleteManager.dismiss();
+        }
+
+        if (parent != null && parent.fullscreenButton.mouseClicked(xMouse, yMouse, mouseButton))
+            return;
+        
+        
         // Check go to line dialog clicks first
         if (goToLineDialog.isVisible() && goToLineDialog.mouseClicked(xMouse, yMouse, mouseButton)) {
             return;
         }
-
+        
         // Check search bar clicks first
         if (searchBar.isVisible() && searchBar.mouseClicked(xMouse, yMouse, mouseButton)) {
             return;
         }
-
+        
         // If search bar is visible but click was outside it, unfocus the search bar
         if (searchBar.isVisible()) {
             searchBar.unfocus();
         }
-
+        
         // Let the overlay consume clicks (it returns true when it handled the event)
         if (KEYS_OVERLAY.mouseClicked(xMouse, yMouse, mouseButton))
             return;
-
+            
         // Determine whether click occurred inside the text area bounds
         this.active = xMouse >= this.x && xMouse < this.x + this.width && yMouse >= this.y && yMouse < this.y + this.height;
         if (this.active) {
+            // Ctrl+Click: Go to definition
+            if (mouseButton == 0 && isCtrlKeyDown()) {
+                Object[] tokenInfo = getTokenAtScreenPosition(xMouse, yMouse);
+                if (tokenInfo != null) {
+                    Token token = (Token) tokenInfo[0];
+                    int targetOffset = -1;
+                    
+                    // Check if token has method info with declaration
+                    if (token.getMethodInfo() != null) {
+                        MethodInfo methodInfo = token.getMethodInfo();
+                        if (methodInfo.getNameOffset() >= 0) {
+                            targetOffset = methodInfo.getNameOffset();
+                        }
+                    }
+                    // Check if token has method call info with resolved declaration
+                    else if (token.getMethodCallInfo() != null) {
+                        MethodCallInfo callInfo = token.getMethodCallInfo();
+                        MethodInfo resolvedMethod = callInfo.getResolvedMethod();
+                        if (resolvedMethod != null && resolvedMethod.getNameOffset() >= 0) {
+                            targetOffset = resolvedMethod.getNameOffset();
+                        }
+                    }
+                    // Check if token has field info with declaration
+                    else if (token.getFieldInfo() != null) {
+                        FieldInfo fieldInfo = token.getFieldInfo();
+                        if (fieldInfo.getDeclarationOffset() >= 0) {
+                            targetOffset = fieldInfo.getDeclarationOffset();
+                        }
+                    }
+                    // Check if token has field access info with resolved declaration
+                    else if (token.getFieldAccessInfo() != null) {
+                        FieldAccessInfo accessInfo = token.getFieldAccessInfo();
+                        FieldInfo resolvedField = accessInfo.getResolvedField();
+                        if (resolvedField != null && resolvedField.getDeclarationOffset() >= 0) {
+                            targetOffset = resolvedField.getDeclarationOffset();
+                        }
+                    }
+                    // Check if token is a script-defined type
+                    else if (token.getTypeInfo() != null && token.getTypeInfo() instanceof ScriptTypeInfo) {
+                       ScriptTypeInfo scriptType = 
+                            (ScriptTypeInfo) token.getTypeInfo();
+                        if (scriptType.getDeclarationOffset() >= 0) {
+                            targetOffset = scriptType.getDeclarationOffset();
+                        }
+                    }
+                    
+                    // Jump to definition if found
+                    if (targetOffset >= 0) {
+                        selection.reset(targetOffset);
+                        scrollToCursor();
+                        this.clicked = false;
+                        activeTextfield = this;
+                        return; // Consume the event
+                    }
+                }
+            }
+            
             // Compute logical click position in text
             int clickPos = this.getSelectionPos(xMouse, yMouse);
 
@@ -2078,7 +3323,7 @@ public class GuiScriptTextArea extends GuiNpcTextField {
             if (this.clicked && getPaddedLineCount() * this.container.lineHeight > this.height && xMouse > this.x + this.width - 8) {
                 // We consumed the mouse-down as a scrollbar drag start
                 this.clicked = false;
-                scroll.startScrollbarDrag(yMouse, this.y, this.height, getPaddedLineCount());
+                scroll.startScrollbarDrag(yMouse,this.y,this.height, getPaddedLineCount());
             } else {
                 // Handle double/triple click selection counting
                 if (time - this.lastClicked < 300L) {
@@ -2108,6 +3353,29 @@ public class GuiScriptTextArea extends GuiNpcTextField {
 
             this.lastClicked = time;
             activeTextfield = this;
+
+            // Click-to-pin handling: if enabled, clicking a token will pin/unpin its tooltip
+            if (mouseButton == 0 && hoverState.isClickToPinEnabled()) {
+                Object[] tokenInfo = getTokenAtScreenPosition(xMouse, yMouse);
+                if (tokenInfo != null) {
+                    Token clickedToken = (Token) tokenInfo[0];
+                    int tokenScreenX = (Integer) tokenInfo[1];
+                    int tokenScreenY = (Integer) tokenInfo[2];
+                    int tokenWidth = (Integer) tokenInfo[3];
+
+                    // If already pinned on same token, unpin; otherwise pin this token
+                    if (hoverState.isPinned() && hoverState.getHoveredToken() == clickedToken) {
+                        hoverState.unpin();
+                    } else {
+                        hoverState.pinToken(clickedToken, tokenScreenX, tokenScreenY, tokenWidth);
+                    }
+                } else {
+                    // Clicked outside any token -> unpin any pinned tooltip
+                    if (hoverState.isPinned()) {
+                        hoverState.unpin();
+                    }
+                }
+            }
         }
     }
 
@@ -2122,10 +3390,20 @@ public class GuiScriptTextArea extends GuiNpcTextField {
         renameHandler.updateCursor();
         ++this.cursorCounter;
     }
-
+    
     // ==================== TEXT MANAGEMENT ====================
 
     public void setText(String text) {
+        setText(text, false);
+    }
+    
+    /**
+     * Set text with optional atomic undo support.
+     * 
+     * @param text The new text content
+     * @param allowAtomic If true, allows grouping consecutive typing into single undo steps
+     */
+    private void setText(String text, boolean allowAtomic) {
         if (text == null) {
             return;
         }
@@ -2139,19 +3417,53 @@ public class GuiScriptTextArea extends GuiNpcTextField {
                 this.listener.textUpdate(text);
             }
 
-            if (!this.undoing) {
+            // Atomic undo logic: group consecutive typing into word-based undo steps
+            if (!this.undoing && allowAtomic && !undoList.isEmpty()) {
+                long now = System.currentTimeMillis();
+                int cursorPos = selection.getCursorPosition();
+                
+                // Check if we should merge with the previous undo entry
+                boolean shouldMerge = 
+                    (now - lastTypingTime < 2000) &&  // Within 2 seconds
+                    Math.abs(cursorPos - lastTypingPos) <= 1; // Contiguous edit
+                
+                // If typing a space or newline, break the undo group
+                if (shouldMerge && text.length() > 0 && cursorPos > 0 && cursorPos <= text.length()) {
+                    char lastChar = text.charAt(cursorPos - 1);
+                    if (Character.isWhitespace(lastChar)) {
+                        shouldMerge = false;
+                    }
+                }
+                
+                if (shouldMerge) {
+                    // Don't add a new undo entry - just update the text
+                    // The existing undo entry will remain unchanged
+                } else {
+                    // Add new undo entry
+                    this.undoList.add(new GuiScriptTextArea.UndoData(this.text, selection.getCursorPosition()));
+                    this.redoList.clear();
+                }
+                
+                lastTypingTime = now;
+                lastTypingPos = cursorPos;
+            } else if (!this.undoing) {
+                // Normal undo entry (non-atomic)
                 this.undoList.add(new GuiScriptTextArea.UndoData(this.text, selection.getCursorPosition()));
                 this.redoList.clear();
+                
+                // Reset atomic undo tracking
+                lastTypingTime = System.currentTimeMillis();
+                lastTypingPos = selection.getCursorPosition();
             }
 
             this.text = text;
             //this.container = new TextContainer(text);
             if (this.container == null)
-                this.container = new JavaTextContainer(text);
+                this.container = new ScriptTextContainer(text);
 
             this.container.init(text, this.width, this.height);
 
-            if (this.enableCodeHighlighting)
+            if (this.enableCodeHighlighting) 
                 this.container.formatCodeText();
 
             // Ensure scroll state stays in bounds after text change
@@ -2163,6 +3475,9 @@ public class GuiScriptTextArea extends GuiNpcTextField {
             // Consider text changes user activity to pause caret blinking briefly
             selection.markActivity();
             searchBar.updateMatches();
+            
+            // Update autocomplete manager with current container
+            autocompleteManager.setContainer(this.container);
 
         }
     }
@@ -2183,6 +3498,26 @@ public class GuiScriptTextArea extends GuiNpcTextField {
         this.enableCodeHighlighting = true;
         this.container.formatCodeText();
     }
+    
+    /**
+     * Set the scripting language for syntax highlighting and type inference.
+     * @param language The language name (e.g., "ECMAScript", "Groovy")
+     */
+    public void setLanguage(String language) {
+        if (this.container != null) {
+            this.container.setLanguage(language);
+            if (this.enableCodeHighlighting) {
+                this.container.formatCodeText();
+            }
+        }
+    }
+    
+    /**
+     * Get the current scripting language.
+     */
+    public String getLanguage() {
+        return this.container != null ? this.container.getLanguage() : "ECMAScript";
+    }
 
     /**
      * Set the script context (NPC, PLAYER, BLOCK, ITEM, etc.).
@@ -2192,7 +3527,7 @@ public class GuiScriptTextArea extends GuiNpcTextField {
      */
     public void setScriptContext(ScriptContext context) {
         if (this.container != null) {
-            //  this.container.setScriptContext(context);
+            this.container.setScriptContext(context);
         }
     }
 
@@ -2202,8 +3537,23 @@ public class GuiScriptTextArea extends GuiNpcTextField {
      * @return The script context (NPC, PLAYER, BLOCK, ITEM, etc.)
      */
     public ScriptContext getScriptContext() {
-        //   return this.container != null ? this.container.getScriptContext() : ScriptContext.GLOBAL;
-        return ScriptContext.GLOBAL;
+        return this.container != null ? this.container.getScriptContext() : ScriptContext.GLOBAL;
+    }
+
+    public ScriptTextContainer getContainer() {
+        return this.container;
+    }
+
+    /**
+     * Add implicit imports that should be resolved without explicit import statements.
+     * Used for JaninoScript default imports and hook parameter types.
+     *
+     * @param patterns Array of import patterns to add (wildcard packages like "noppes.npcs.api.*" or FQ class names)
+     */
+    public void addImplicitImports(String... patterns) {
+        if (this.container != null) {
+            this.container.addImplicitImports(patterns);
+        }
     }
 
     public void setListener(ITextChangeListener listener) {
@@ -2213,7 +3563,164 @@ public class GuiScriptTextArea extends GuiNpcTextField {
     private void clampSelectionBounds() {
         selection.clamp(text != null ? text.length() : 0);
     }
+    
+    // ==================== AUTOCOMPLETE VISIBILITY ====================
+    
+    /**
+     * Check if a click position is within the bounds of the autocomplete menu.
+     * Returns false if autocomplete is not visible.
+     */
+    public boolean isPointOnAutocompleteMenu(int mouseX, int mouseY) {
+        if (autocompleteManager == null || !autocompleteManager.isVisible()) {
+            return false;
+        }
+        
+        
+        AutocompleteMenu menu = autocompleteManager.getMenu();
+        if (menu == null) {
+            return false;
+        }
+        
+        int menuX = menu.getX();
+        int menuY = menu.getY();
+        int menuWidth = menu.getWidth();
+        int menuHeight = menu.getHeight();
+        
+        return mouseX >= menuX && mouseX <= menuX + menuWidth &&
+               mouseY >= menuY && mouseY <= menuY + menuHeight;
+    }
+    
+    // ==================== AUTO-IMPORT ====================
+    
+    /**
+     * Add an import statement and sort all imports.
+     */
+    private void addAndSortImport(String importPath) {
+        String currentText = this.text;
+        int savedCursorPos = selection.getCursorPosition();
+        
+        // Find all existing imports
+        java.util.regex.Pattern importPattern = java.util.regex.Pattern.compile(
+            "(?m)^\\s*import\\s+(?:static\\s+)?([A-Za-z_][A-Za-z0-9_]*(?:\\s*\\.\\s*[A-Za-z_*][A-Za-z0-9_]*)*)\\s*;\\s*$"
+        );
+        java.util.regex.Matcher matcher = importPattern.matcher(currentText);
+        
+        java.util.List<ImportEntry> imports = new java.util.ArrayList<>();
+        int firstImportStart = -1;
+        int lastImportEnd = -1;
+        
+        while (matcher.find()) {
+            String importStatement = matcher.group(0);
+            String importPathFound = matcher.group(1).replaceAll("\\s+", "");
+            
+            if (firstImportStart == -1) {
+                firstImportStart = matcher.start();
+            }
+            lastImportEnd = matcher.end();
+            
+            // Skip if this is the import we're trying to add
+            if (!importPathFound.equals(importPath)) {
+                imports.add(new ImportEntry(importPathFound, importStatement.trim()));
+            }
+        }
+        
+        // Add the new import
+        imports.add(new ImportEntry(importPath, "import " + importPath + ";"));
+        
+        // Sort imports
+        java.util.Collections.sort(imports, new java.util.Comparator<ImportEntry>() {
+            @Override
+            public int compare(ImportEntry a, ImportEntry b) {
+                // Sort order: java.*, javax.*, then others alphabetically
+                boolean aIsJava = a.path.startsWith("java.");
+                boolean aIsJavax = a.path.startsWith("javax.");
+                boolean bIsJava = b.path.startsWith("java.");
+                boolean bIsJavax = b.path.startsWith("javax.");
+                
+                if (aIsJava && !bIsJava) return -1;
+                if (!aIsJava && bIsJava) return 1;
+                if (aIsJavax && !bIsJavax && !bIsJava) return -1;
+                if (!aIsJavax && bIsJavax && !aIsJava) return 1;
+                
+                return a.path.compareTo(b.path);
+            }
+        });
+        
+        // Build the new import block
+        StringBuilder importBlock = new StringBuilder();
+        String prevPackage = "";
+        for (ImportEntry entry : imports) {
+            // Add blank line between different top-level packages
+            String topPackage = entry.path.contains(".") ? 
+                entry.path.substring(0, entry.path.indexOf('.')) : entry.path;
+            if (!prevPackage.isEmpty() && !topPackage.equals(prevPackage)) {
+                importBlock.append("\n");
+            }
+            importBlock.append(entry.statement).append("\n");
+            prevPackage = topPackage;
+        }
+        
+        // Determine where to insert/replace imports
+        String newText;
+        int cursorAdjustment = 0;
+        
+        if (firstImportStart != -1) {
+            // Replace existing import block
+            String before = currentText.substring(0, firstImportStart);
+            String after = currentText.substring(lastImportEnd);
+            newText = before + importBlock.toString() + after;
+            
+            // Adjust cursor if it's after the import block
+            int newImportEnd = firstImportStart + importBlock.length();
+            if (savedCursorPos >= lastImportEnd) {
+                cursorAdjustment = newImportEnd - lastImportEnd;
+            }
+        } else {
+            // No existing imports - add at top after package statement (if any)
+            java.util.regex.Pattern packagePattern = java.util.regex.Pattern.compile(
+                "(?m)^\\s*package\\s+[A-Za-z_][A-Za-z0-9_.]*\\s*;\\s*$"
+            );
+            java.util.regex.Matcher pkgMatcher = packagePattern.matcher(currentText);
+            
+            int insertPos = 0;
+            if (pkgMatcher.find()) {
+                insertPos = pkgMatcher.end();
+                // Add blank line after package
+                newText = currentText.substring(0, insertPos) + "\n" + 
+                         importBlock.toString() + "\n" + currentText.substring(insertPos);
+                cursorAdjustment = importBlock.length() + 2; // +2 for the newlines
+            } else {
+                // Insert at very beginning
+                newText = importBlock.toString() + "\n" + currentText;
+                cursorAdjustment = importBlock.length() + 1;
+            }
+        }
+        
+        // Apply the changes
+        setText(newText);
+        selection.reset(savedCursorPos + cursorAdjustment);
+        scrollToCursor();
+    }
 
+    public void formatCodeText() {
+        if (this.enableCodeHighlighting && this.container != null) {
+            this.container.formatCodeText();
+        }
+    }
+
+    /**
+     * Helper class for tracking imports during sorting.
+     */
+    private static class ImportEntry {
+        String path;
+        String statement;
+        
+        ImportEntry(String path, String statement) {
+            this.path = path;
+            this.statement = statement;
+        }
+    }
+    
     // ==================== INNER CLASSES ====================
 
     public static class UndoData {

@@ -1,7 +1,6 @@
 package noppes.npcs.ai;
 
 import kamkeel.npcs.addon.DBCAddon;
-import kamkeel.npcs.controllers.data.ability.type.AbilityGuard;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityLivingBase;
 import net.minecraft.entity.player.EntityPlayer;
@@ -79,16 +78,6 @@ public class CombatHandler {
             }
             aggressors.put(el, f + damageAmount);
         }
-
-        // Handle guard counter before interruption
-
-//        if (npc.abilities.getCurrentAbility() instanceof AbilityGuard) {
-//            AbilityGuard guard =
-//                (AbilityGuard) npc.abilities.getCurrentAbility();
-//            if (guard.isGuarding() && e instanceof EntityLivingBase) {
-//                guard.onDamageTaken(npc, (EntityLivingBase) e, source, damageAmount);
-//            }
-//        }
 
         // Check for ability interruption
         npc.abilities.onDamage(source, damageAmount);

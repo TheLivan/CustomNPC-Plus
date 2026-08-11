@@ -1,7 +1,7 @@
 package noppes.npcs.scripted.wrapper;
 
+import kamkeel.npcs.controllers.AbilityController;
 import kamkeel.npcs.controllers.data.ability.Ability;
-import kamkeel.npcs.controllers.data.ability.AbilityController;
 import net.minecraft.entity.player.EntityPlayer;
 import noppes.npcs.api.ability.IAbility;
 import noppes.npcs.api.ability.IPlayerAbilityData;
@@ -28,8 +28,8 @@ public class ScriptPlayerAbilityData implements IPlayerAbilityData {
 
     @Override
     public void unlockAbility(String key) {
-        // Validate ability exists and allows players
-        Ability ability = AbilityController.Instance.resolveAbility(key);
+        // Validate ability exists and allows players (peek avoids deep copy)
+        Ability ability = AbilityController.Instance.peekAbility(key);
         if (ability == null) {
             return; // Ability doesn't exist
         }
@@ -43,12 +43,14 @@ public class ScriptPlayerAbilityData implements IPlayerAbilityData {
 
     @Override
     public void lockAbility(String key) {
-        data.lockAbility(key);
+        String canonicalKey = resolveCanonicalKey(key);
+        data.lockAbility(canonicalKey);
     }
 
     @Override
     public boolean hasUnlockedAbility(String key) {
-        return data.hasUnlockedAbility(key);
+        String canonicalKey = resolveCanonicalKey(key);
+        return data.hasUnlockedAbility(canonicalKey);
     }
 
     @Override
@@ -83,12 +85,18 @@ public class ScriptPlayerAbilityData implements IPlayerAbilityData {
 
     @Override
     public IAbility getCurrentAbility() {
-        return data.getCurrentAbility();
+        Ability a = data.getCurrentAbility();
+        return a != null ? a.deepCopy() : null;
     }
 
     @Override
     public void interruptCurrentAbility() {
         data.interruptCurrentAbility();
+    }
+
+    @Override
+    public void completeCurrentAbility() {
+        data.completeCurrentAbility();
     }
 
     @Override
@@ -130,5 +138,39 @@ public class ScriptPlayerAbilityData implements IPlayerAbilityData {
         EntityPlayer player = playerData.player;
         if (player == null) return false;
         return data.activateAbility(player, key);
+    }
+
+    // Toggle system
+
+    @Override
+    public int toggleAbility(String key) {
+        return data.toggleAbility(key);
+    }
+
+    @Override
+    public int getToggleState(String key) {
+        return data.getToggleState(key);
+    }
+
+    @Override
+    public void setToggleState(String key, int state) {
+        data.setToggleState(key, state);
+    }
+
+    @Override
+    public boolean isAbilityToggled(String key) {
+        return data.isAbilityToggled(key);
+    }
+
+    /**
+     * Resolve a user-provided key to the canonical storage key.
+     * Uses the same resolution as unlockAbility: registry key for built-in, UUID for custom.
+     */
+    private String resolveCanonicalKey(String key) {
+        Ability ability = AbilityController.Instance.peekAbility(key);
+        if (ability != null && ability.getId() != null) {
+            return ability.getId();
+        }
+        return key;
     }
 }

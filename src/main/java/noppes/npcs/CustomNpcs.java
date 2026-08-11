@@ -21,13 +21,25 @@ import io.github.somehussar.janinoloader.api.IDynamicCompilerBuilder;
 import kamkeel.npcs.addon.AddonManager;
 import kamkeel.npcs.command.CommandKamkeel;
 import kamkeel.npcs.command.profile.CommandProfile;
+import kamkeel.npcs.controllers.AbilityController;
 import kamkeel.npcs.controllers.AttributeController;
 import kamkeel.npcs.controllers.ProfileController;
 import kamkeel.npcs.controllers.SyncController;
 import kamkeel.npcs.controllers.TelegraphController;
-import kamkeel.npcs.controllers.data.ability.AbilityController;
+import kamkeel.npcs.controllers.data.energycharge.EnergyChargeTracker;
 import kamkeel.npcs.controllers.data.profile.CNPCData;
 import kamkeel.npcs.developer.Developer;
+import kamkeel.npcs.entity.EntityEnergyBarrier;
+import kamkeel.npcs.entity.EntityAbilityBeam;
+import kamkeel.npcs.entity.EntityAbilityDisc;
+import kamkeel.npcs.entity.EntityAbilityLaser;
+import kamkeel.npcs.entity.EntityAbilityOrb;
+import kamkeel.npcs.entity.EntityEnergyPanel;
+import kamkeel.npcs.entity.EntityEnergySweeper;
+import kamkeel.npcs.entity.EntityAbilityZone;
+import kamkeel.npcs.entity.EntityEnergyDome;
+import kamkeel.npcs.entity.EntityEnergyProjectile;
+import kamkeel.npcs.entity.EntityEnergySlicer;
 import kamkeel.npcs.network.PacketHandler;
 import kamkeel.npcs.util.BukkitUtil;
 import net.minecraft.block.Block;
@@ -55,6 +67,7 @@ import noppes.npcs.compat.PixelmonHelper;
 import noppes.npcs.config.ConfigMain;
 import noppes.npcs.config.LoadConfiguration;
 import noppes.npcs.config.legacy.LegacyConfig;
+import noppes.npcs.controllers.APIRegistry;
 import noppes.npcs.controllers.AnimationController;
 import noppes.npcs.controllers.AuctionController;
 import noppes.npcs.controllers.BankController;
@@ -86,11 +99,6 @@ import noppes.npcs.entity.EntityNpcDragon;
 import noppes.npcs.entity.EntityNpcPony;
 import noppes.npcs.entity.EntityNpcSlime;
 import noppes.npcs.entity.EntityProjectile;
-import kamkeel.npcs.entity.EntityAbilityOrb;
-import kamkeel.npcs.entity.EntityAbilityDisc;
-import kamkeel.npcs.entity.EntityAbilityLaser;
-import kamkeel.npcs.entity.EntityAbilityBeam;
-import kamkeel.npcs.entity.EntityAbilitySweeper;
 import noppes.npcs.entity.old.EntityNPCDwarfFemale;
 import noppes.npcs.entity.old.EntityNPCDwarfMale;
 import noppes.npcs.entity.old.EntityNPCElfFemale;
@@ -117,7 +125,7 @@ import java.util.HashSet;
 import java.util.Set;
 import java.util.function.Consumer;
 
-@Mod(modid = "customnpcs", name = "CustomNPC+", version = "1.11-beta1")
+@Mod(modid = "customnpcs", name = "CustomNPC+", version = "1.11.1")
 public class CustomNpcs {
 
     @SidedProxy(clientSide = "noppes.npcs.client.ClientProxy", serverSide = "noppes.npcs.CommonProxy")
@@ -287,11 +295,15 @@ public class CustomNpcs {
         registerNewEntity(EntityChairMount.class, "CustomNpcChairMount", 64, 10, false);
         registerNewEntity(EntityProjectile.class, "throwableitem", 64, 3, true);
         registerNewEntity(EntityMagicProjectile.class, "magicprojectile", 64, 3, true);
-        registerNewEntity(EntityAbilityOrb.class, "abilityorb", 64, 3, true);
-        registerNewEntity(EntityAbilityDisc.class, "abilitydisc", 64, 3, true);
-        registerNewEntity(EntityAbilityLaser.class, "abilitylaser", 64, 3, true);
-        registerNewEntity(EntityAbilityBeam.class, "abilitybeam", 64, 3, true);
-        registerNewEntity(EntityAbilitySweeper.class, "abilitysweeper", 64, 3, true);
+        registerNewEntity(EntityAbilityOrb.class, "abilityorb", 64, 1, true);
+        registerNewEntity(EntityAbilityDisc.class, "abilitydisc", 64, 1, true);
+        registerNewEntity(EntityAbilityLaser.class, "abilitylaser", 64, 1, true);
+        registerNewEntity(EntityAbilityBeam.class, "abilitybeam", 160, 1, true);
+        registerNewEntity(EntityEnergySweeper.class, "abilitysweeper", 64, 3, true);
+        registerNewEntity(EntityAbilityZone.class, "abilityzone", 64, 3, true);
+        registerNewEntity(EntityEnergyDome.class, "energydome", 64, 3, true);
+        registerNewEntity(EntityEnergyPanel.class, "energypanel", 64, 3, true);
+        registerNewEntity(EntityEnergySlicer.class, "energyslicer", 64, 1, true);
 
         new RecipeController();
 
@@ -305,6 +317,11 @@ public class CustomNpcs {
         new AddonManager();
         new AttributeController();
         new MagicController();
+        
+        SyncController.register();
+
+
+        APIRegistry.Instance.register("CNPC+ API", "https://kamkeel.github.io/CustomNPC-Plus/");
     }
 
     @EventHandler
@@ -326,7 +343,19 @@ public class CustomNpcs {
 
     @EventHandler
     public void loadComplete(FMLLoadCompleteEvent ev) {
+        // Runs after every other mod has loaded. Kept on the proxy: the client side registers
+        // inventory tabs, and naming those types here would drag client-only GUI classes into
+        // a class the server loads.
+        proxy.loadComplete();
         proxy.buildPackageIndex();
+
+        // Load built-in animations on the client so they're available for ability preview.
+        // On dedicated servers, AnimationController.load() only runs on the server JVM,
+        // leaving the client without built-in animation data. In singleplayer, load()
+        // runs later during server start and reloads everything, so this is harmless.
+        if (FMLCommonHandler.instance().getSide().isClient()) {
+            AnimationController.Instance.loadClientBuiltIns();
+        }
     }
 
     @EventHandler
@@ -336,6 +365,7 @@ public class CustomNpcs {
             clientJaninoCompiler = null;
 
         Server = event.getServer();
+        AnimationController.Instance.load();
         ChunkController.Instance.clear();
         FactionController.getInstance().load();
         MagicController.getInstance().load();
@@ -345,7 +375,6 @@ public class CustomNpcs {
         new GlobalDataController();
         new SpawnController();
         new LinkedNpcController();
-        new AnimationController();
         AbilityController.Instance.load();
         TelegraphController.init();
 
@@ -412,6 +441,10 @@ public class CustomNpcs {
         if (AuctionController.Instance != null) {
             AuctionController.Instance.save();
         }
+
+        EntityEnergyProjectile.clearAllProjectiles();
+        EntityEnergyBarrier.clearAllBarriers();
+        EnergyChargeTracker.Instance.clear();
 
         if (FMLCommonHandler.instance().getSide().isClient())
             clientJaninoCompiler = null;

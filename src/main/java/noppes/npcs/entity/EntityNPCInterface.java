@@ -6,6 +6,9 @@ import cpw.mods.fml.relauncher.Side;
 import cpw.mods.fml.relauncher.SideOnly;
 import io.netty.buffer.ByteBuf;
 import kamkeel.npcs.addon.DBCAddon;
+import kamkeel.npcs.controllers.data.ability.type.AbilityCounter;
+import kamkeel.npcs.controllers.data.ability.type.AbilityDefend;
+import kamkeel.npcs.controllers.data.ability.type.AbilityDodge;
 import kamkeel.npcs.addon.client.DBCClient;
 import kamkeel.npcs.network.PacketHandler;
 import kamkeel.npcs.network.enums.EnumSoundOperation;
@@ -68,6 +71,7 @@ import net.minecraft.util.Vec3;
 import net.minecraft.world.World;
 import net.minecraft.world.WorldServer;
 import net.minecraftforge.common.MinecraftForge;
+import net.minecraftforge.common.util.Constants;
 import net.minecraftforge.common.util.FakePlayer;
 import net.minecraftforge.event.ServerChatEvent;
 import noppes.npcs.CustomItems;
@@ -250,7 +254,7 @@ public abstract class EntityNPCInterface extends EntityCreature implements IEnti
             setFaction(faction.id);
             setSize(1, 1);
             this.updateTasks();
-            this.func_110163_bv();
+            this.syncDespawnPersistence();
 
             if (!this.isRemote() && this.wrappedNPC == null) {
                 this.wrappedNPC = new ScriptNpc<>(this);
@@ -297,7 +301,7 @@ public abstract class EntityNPCInterface extends EntityCreature implements IEnti
 
     @Override
     public boolean getLeashed() {
-        return false; //Prevents npcs from being leashed
+        return false; // Prevents npcs from being leashed
     }
 
     @Override
@@ -384,11 +388,13 @@ public abstract class EntityNPCInterface extends EntityCreature implements IEnti
             }
         }
 
-        if (stats.potionType != EnumPotionType.None) {
-            if (stats.potionType != EnumPotionType.Fire)
-                ((EntityLivingBase) receiver).addPotionEffect(new PotionEffect(this.getPotionEffect(stats.potionType), stats.potionDuration * 20, stats.potionAmp));
-            else
-                receiver.setFire(stats.potionDuration);
+        if (stats.potionType == EnumPotionType.Fire) {
+            receiver.setFire(stats.potionDuration);
+        } else if (stats.potionType != EnumPotionType.None) {
+            int potionId = stats.potionType.getResolvedPotionId(stats.potionManualId);
+            if (EnumPotionType.isValidPotionId(potionId)) {
+                ((EntityLivingBase) receiver).addPotionEffect(new PotionEffect(potionId, stats.potionDuration * 20, stats.potionAmp));
+            }
         }
         return didAttack;
     }
@@ -473,7 +479,14 @@ public abstract class EntityNPCInterface extends EntityCreature implements IEnti
         }
 
         if (wasKilled != isKilled() && wasKilled) {
-            reset();
+            if (!worldObj.isRemote) {
+                reset();
+            } else {
+                // Client-side full reset can create health oscillation when spawn data is being repaired.
+                deathTime = 0;
+                currentAnimation = EnumAnimation.NONE;
+                updateHitbox();
+            }
         }
 
         wasKilled = isKilled();
@@ -652,6 +665,9 @@ public abstract class EntityNPCInterface extends EntityCreature implements IEnti
         if (damagesource.damageType != null && damagesource.damageType.equals("outOfWorld") && isKilled()) {
             reset();
         }
+        if (this.abilities != null && this.abilities.isCurrentAbilityInvulnerable()) {
+            return false;
+        }
 
         // Check for custom weapon attack speed - bypass immunity if enough time has passed
         Entity sourceEntity = damagesource.getEntity();
@@ -698,6 +714,21 @@ public abstract class EntityNPCInterface extends EntityCreature implements IEnti
 
         //  Resistances
         i = stats.resistances.applyResistance(damagesource, i);
+
+        // Defend abilities
+        AbilityDefend defend = this.abilities != null ? this.abilities.getActiveDefend() : null;
+        if (defend != null) {
+            // Dodge & Counter: cancel attack entirely
+            if (defend instanceof AbilityDodge || defend instanceof AbilityCounter) {
+                float result = defend.onDefend(attackingEntity, damagesource, i);
+                if (result != i) {
+                    return false;
+                }
+            } else {
+                // Guard: reduce damage
+                i = defend.onDefend(attackingEntity, damagesource, i);
+            }
+        }
 
         NpcEvent.DamagedEvent event = new NpcEvent.DamagedEvent(this.wrappedNPC, attackingEntity, i, damagesource);
         if (EventHooks.onNPCDamaged(this, event) || isKilled())
@@ -1043,29 +1074,6 @@ public abstract class EntityNPCInterface extends EntityCreature implements IEnti
         return weight;
     }
 
-    /*
-     * Used for getting the applied potion effect from dataStats.
-     */
-    private int getPotionEffect(EnumPotionType p) {
-        switch (p) {
-            case Poison:
-                return Potion.poison.id;
-            case Hunger:
-                return Potion.hunger.id;
-            case Weakness:
-                return Potion.weakness.id;
-            case Slowness:
-                return Potion.moveSlowdown.id;
-            case Nausea:
-                return Potion.confusion.id;
-            case Blindness:
-                return Potion.blindness.id;
-            case Wither:
-                return Potion.wither.id;
-            default:
-                return 0;
-        }
-    }
 
     @Override
     public void setAir(int air) {
@@ -1216,7 +1224,7 @@ public abstract class EntityNPCInterface extends EntityCreature implements IEnti
         this.getEntityAttribute(SharedMonsterAttributes.followRange).setBaseValue(ConfigMain.NpcNavRange);
 
         this.updateTasks();
-        this.func_110163_bv();
+        this.syncDespawnPersistence();
     }
 
     @Override
@@ -1277,7 +1285,8 @@ public abstract class EntityNPCInterface extends EntityCreature implements IEnti
             World.MAX_ENTITY_RADIUS = newWidth / 2;
         }
 
-        setSize(newWidth, newHeight);
+        this.width = newWidth;
+        this.height = newHeight;
         this.setPosition(posX, posY, posZ);
     }
 
@@ -1415,6 +1424,26 @@ public abstract class EntityNPCInterface extends EntityCreature implements IEnti
         field_20063_u += d * 0.25D;
         field_20061_w += d2 * 0.25D;
         field_20062_v += d1 * 0.25D;
+    }
+
+    @Override
+    protected void despawnEntity() {
+        syncDespawnPersistence();
+        super.despawnEntity();
+    }
+
+    public void syncDespawnPersistence() {
+        if (stats == null) {
+            if (!this.persistenceRequired) {
+                this.func_110163_bv();
+            }
+            return;
+        }
+        if (stats.canDespawn) {
+            this.persistenceRequired = false;
+        } else if (!this.persistenceRequired) {
+            this.func_110163_bv();
+        }
     }
 
     @Override
@@ -1819,6 +1848,11 @@ public abstract class EntityNPCInterface extends EntityCreature implements IEnti
         compound.setBoolean("DeadBody", stats.hideKilledBody);
         compound.setInteger("StandingState", ais.standingType.ordinal());
         compound.setInteger("MovingState", ais.movingType.ordinal());
+        compound.setInteger("MovingType", ais.movementType);
+        compound.setDouble("FlySpeed", ais.flySpeed);
+        compound.setDouble("FlyGravity", ais.flyGravity);
+        compound.setBoolean("HasFlyLimit", ais.hasFlyLimit);
+        compound.setInteger("FlyHeightLimit", ais.flyHeightLimit);
         compound.setInteger("Orientation", ais.orientation);
         compound.setFloat("OffsetY", ais.bodyOffsetY);
         compound.setInteger("Role", advanced.role.ordinal());
@@ -1850,6 +1884,7 @@ public abstract class EntityNPCInterface extends EntityCreature implements IEnti
         try {
             readSpawnData(ByteBufUtils.readNBT(buf));
         } catch (IOException e) {
+            e.printStackTrace();
         }
     }
 
@@ -1859,6 +1894,21 @@ public abstract class EntityNPCInterface extends EntityCreature implements IEnti
         stats.hideKilledBody = compound.getBoolean("DeadBody");
         ais.standingType = EnumStandingType.values()[compound.getInteger("StandingState") % EnumStandingType.values().length];
         ais.movingType = EnumMovingType.values()[compound.getInteger("MovingState") % EnumMovingType.values().length];
+        if (compound.hasKey("MovingType", Constants.NBT.TAG_INT)) {
+            ais.movementType = compound.getInteger("MovingType");
+        }
+        if (compound.hasKey("FlySpeed", Constants.NBT.TAG_DOUBLE)) {
+            ais.flySpeed = compound.getDouble("FlySpeed");
+        }
+        if (compound.hasKey("FlyGravity", Constants.NBT.TAG_DOUBLE)) {
+            ais.flyGravity = compound.getDouble("FlyGravity");
+        }
+        if (compound.hasKey("HasFlyLimit", Constants.NBT.TAG_BYTE)) {
+            ais.hasFlyLimit = compound.getBoolean("HasFlyLimit");
+        }
+        if (compound.hasKey("FlyHeightLimit", Constants.NBT.TAG_INT)) {
+            ais.flyHeightLimit = compound.getInteger("FlyHeightLimit");
+        }
         ais.orientation = compound.getInteger("Orientation");
         ais.bodyOffsetY = compound.getFloat("OffsetY");
 

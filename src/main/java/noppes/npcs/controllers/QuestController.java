@@ -1,7 +1,8 @@
 package noppes.npcs.controllers;
 
 import kamkeel.npcs.controllers.SyncController;
-import kamkeel.npcs.network.enums.EnumSyncType;
+import kamkeel.npcs.controllers.sync.handlers.QuestCategorySyncHandler;
+import kamkeel.npcs.network.enums.SyncType;
 import net.minecraft.nbt.CompressedStreamTools;
 import net.minecraft.nbt.NBTTagCompound;
 import net.minecraft.nbt.NBTTagList;
@@ -69,6 +70,7 @@ public class QuestController implements IQuestHandler {
                 if (!file.isDirectory())
                     continue;
                 QuestCategory category = loadCategoryDir(file);
+                List<Quest> reassigned = new ArrayList<Quest>();
                 Iterator<Integer> ite = category.quests.keySet().iterator();
                 while (ite.hasNext()) {
                     int id = ite.next();
@@ -76,13 +78,56 @@ public class QuestController implements IQuestHandler {
                         lastUsedQuestID = id;
                     Quest quest = category.quests.get(id);
                     if (quests.containsKey(id)) {
-                        LogWriter.error("Duplicate id " + quest.id + " from category " + category.title);
+                        // Quest IDs live in the filename, not inside the JSON body,
+                        // so a simple rename permanently resolves the conflict.
+                        File catDir = new File(getDir(), category.title);
+
+                        // Find the next free ID. It has to clear three things: the ids already
+                        // registered globally, the ids this category still holds but has not
+                        // reached yet, and any file already on disk - renameTo overwrites
+                        // silently on POSIX, so landing on an existing file would destroy it.
+                        int newId = lastUsedQuestID;
+                        do {
+                            newId++;
+                        } while (quests.containsKey(newId)
+                            || category.quests.containsKey(newId)
+                            || new File(catDir, newId + ".json").exists());
+                        lastUsedQuestID = newId;
+
+                        File oldFile = new File(catDir, id + ".json");
+                        File newFile = new File(catDir, newId + ".json");
+                        boolean renamed = oldFile.renameTo(newFile);
+
+                        quest.id = newId;
                         ite.remove();
+                        reassigned.add(quest);
+
+                        if (renamed) {
+                            LogWriter.info("Quest ID conflict: reassigned \"" + quest.title
+                                + "\" from id " + id + " to " + newId
+                                + " in category \"" + category.title + "\"");
+                        } else {
+                            LogWriter.error("Quest ID conflict: could not rename file for \""
+                                + quest.title + "\" (id " + id
+                                + " in category \"" + category.title + "\") to " + newId);
+                        }
                     } else {
                         quests.put(id, quest);
-                        if (quest.profileOptions.enableOptions && quest.profileOptions.completeControl == EnumProfileSync.Shared) {
+                        if (quest.profileOptions.enableOptions
+                                && (quest.profileOptions.completeControl == EnumProfileSync.Shared
+                                    || quest.profileOptions.cooldownControl == EnumProfileSync.Shared)) {
                             sharedQuests.put(id, quest);
                         }
+                    }
+                }
+                // Re-register reassigned quests under their new IDs.
+                for (Quest quest : reassigned) {
+                    quests.put(quest.id, quest);
+                    category.quests.put(quest.id, quest);
+                    if (quest.profileOptions.enableOptions
+                            && (quest.profileOptions.completeControl == EnumProfileSync.Shared
+                                || quest.profileOptions.cooldownControl == EnumProfileSync.Shared)) {
+                        sharedQuests.put(quest.id, quest);
                     }
                 }
                 lastUsedCatID++;
@@ -156,7 +201,7 @@ public class QuestController implements IQuestHandler {
         for (int dia : cat.quests.keySet())
             quests.remove(dia);
         categories.remove(category);
-        SyncController.syncRemove(EnumSyncType.QUEST_CATEGORY, category);
+        SyncController.syncRemove(SyncType.QUEST_CATEGORY, category);
     }
 
     public void saveCategory(QuestCategory category) {
@@ -186,7 +231,7 @@ public class QuestController implements IQuestHandler {
                 dir.mkdirs();
         }
         categories.put(category.id, category);
-        SyncController.syncUpdate(EnumSyncType.QUEST_CATEGORY, -1, SyncController.updateQuestCat(category));
+        SyncController.syncUpdate(SyncType.QUEST_CATEGORY, -1, QuestCategorySyncHandler.serializeCategory(category));
     }
 
     private boolean containsCategoryName(String name) {
@@ -225,7 +270,9 @@ public class QuestController implements IQuestHandler {
         category.quests.put(quest.id, quest);
 
         sharedQuests.remove(quest.id);
-        if (quest.profileOptions.enableOptions && quest.profileOptions.completeControl == EnumProfileSync.Shared) {
+        if (quest.profileOptions.enableOptions
+                && (quest.profileOptions.completeControl == EnumProfileSync.Shared
+                    || quest.profileOptions.cooldownControl == EnumProfileSync.Shared)) {
             sharedQuests.put(quest.id, quest);
         }
 
@@ -241,7 +288,7 @@ public class QuestController implements IQuestHandler {
             if (file2.exists())
                 file2.delete();
             file.renameTo(file2);
-            SyncController.syncUpdate(EnumSyncType.QUEST, category.id, quest.writeToNBT(new NBTTagCompound()));
+            SyncController.syncUpdate(SyncType.QUEST, category.id, quest.writeToNBT(new NBTTagCompound()));
         } catch (Exception e) {
             e.printStackTrace();
         }

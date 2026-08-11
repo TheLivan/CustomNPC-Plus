@@ -157,6 +157,24 @@ public interface IScriptUnit {
      */
     void setErrored(boolean errored);
 
+    // ==================== INSTANCE SCOPE ====================
+
+    /**
+     * Create an instance-scoped copy of this script unit for isolated execution.
+     * The instance shares compiled code with the template but has isolated state.
+     *
+     * @param instanceHandler the script handler for the new instance
+     * @return a new IScriptUnit with isolated variable state
+     */
+    IScriptUnit createInstanceScope(IScriptHandler instanceHandler);
+
+    /**
+     * Check if the given function name is known to be absent from this script unit.
+     */
+    default boolean isUnknownFunction(String type) {
+        return false;
+    }
+
     // ==================== EXECUTION ====================
 
     /**

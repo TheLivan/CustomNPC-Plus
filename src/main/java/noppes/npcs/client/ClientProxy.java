@@ -6,8 +6,32 @@ import cpw.mods.fml.client.registry.RenderingRegistry;
 import cpw.mods.fml.common.FMLCommonHandler;
 import cpw.mods.fml.common.ObfuscationReflectionHelper;
 import kamkeel.npcs.addon.client.DBCClient;
+import kamkeel.npcs.client.command.CommandCNPCDebugger;
+import kamkeel.npcs.client.renderer.RenderEnergyBeam;
+import kamkeel.npcs.client.renderer.RenderEnergyDisc;
+import kamkeel.npcs.client.renderer.RenderEnergyLaser;
+import kamkeel.npcs.client.renderer.RenderEnergyOrb;
+import kamkeel.npcs.client.renderer.RenderSweeper;
+import kamkeel.npcs.client.renderer.RenderZone;
+import kamkeel.npcs.client.renderer.RenderEnergyDome;
+import kamkeel.npcs.client.renderer.RenderEnergyPanel;
+import kamkeel.npcs.client.renderer.EnergyChargePreviewRenderer;
+import kamkeel.npcs.client.renderer.RenderEnergyExplosion;
+import kamkeel.npcs.client.renderer.RenderEnergySlicer;
 import kamkeel.npcs.client.renderer.TelegraphRenderer;
+import kamkeel.npcs.client.renderer.lightning.LightningHandler;
+import kamkeel.npcs.controllers.data.energycharge.EnergyChargePreviewManager;
 import kamkeel.npcs.controllers.data.telegraph.TelegraphManager;
+import kamkeel.npcs.entity.EntityAbilityBeam;
+import kamkeel.npcs.entity.EntityAbilityDisc;
+import kamkeel.npcs.entity.EntityAbilityLaser;
+import kamkeel.npcs.entity.EntityAbilityOrb;
+import kamkeel.npcs.entity.EntityEnergySweeper;
+import kamkeel.npcs.entity.EntityAbilityZone;
+import kamkeel.npcs.entity.EntityEnergyDome;
+import kamkeel.npcs.entity.EntityEnergyPanel;
+import kamkeel.npcs.entity.EntityEnergyExplosion;
+import kamkeel.npcs.entity.EntityEnergySlicer;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiScreen;
 import net.minecraft.client.model.ModelBiped;
@@ -30,6 +54,7 @@ import net.minecraft.util.ChatComponentText;
 import net.minecraft.util.ReportedException;
 import net.minecraft.util.ResourceLocation;
 import net.minecraft.world.World;
+import net.minecraftforge.client.ClientCommandHandler;
 import net.minecraftforge.client.MinecraftForgeClient;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.common.util.FakePlayer;
@@ -88,12 +113,13 @@ import noppes.npcs.client.gui.global.GuiNPCManageAnimations;
 import noppes.npcs.client.gui.global.GuiNPCManageBanks;
 import noppes.npcs.client.gui.global.GuiNPCManageDialogs;
 import noppes.npcs.client.gui.global.GuiNPCManageEffects;
-import noppes.npcs.client.gui.global.GuiNpcManageAbilities;
 import noppes.npcs.client.gui.global.GuiNPCManageFactions;
 import noppes.npcs.client.gui.global.GuiNPCManageLinked;
 import noppes.npcs.client.gui.global.GuiNPCManageQuest;
 import noppes.npcs.client.gui.global.GuiNPCManageTags;
 import noppes.npcs.client.gui.global.GuiNPCManageTransporters;
+import noppes.npcs.client.gui.global.GuiNpcManageAbilities;
+import noppes.npcs.client.gui.global.GuiNpcManageAuction;
 import noppes.npcs.client.gui.global.GuiNpcManageMagic;
 import noppes.npcs.client.gui.global.GuiNpcManageRecipes;
 import noppes.npcs.client.gui.global.GuiNpcQuestReward;
@@ -105,15 +131,15 @@ import noppes.npcs.client.gui.mainmenu.GuiNpcAI;
 import noppes.npcs.client.gui.mainmenu.GuiNpcAdvanced;
 import noppes.npcs.client.gui.mainmenu.GuiNpcDisplay;
 import noppes.npcs.client.gui.mainmenu.GuiNpcStats;
+import noppes.npcs.client.gui.player.GuiAuctionBidding;
+import noppes.npcs.client.gui.player.GuiAuctionListing;
+import noppes.npcs.client.gui.player.GuiAuctionSell;
+import noppes.npcs.client.gui.player.GuiAuctionTrades;
 import noppes.npcs.client.gui.player.GuiBigSign;
 import noppes.npcs.client.gui.player.GuiCrate;
 import noppes.npcs.client.gui.player.GuiMailbox;
 import noppes.npcs.client.gui.player.GuiMailmanWrite;
 import noppes.npcs.client.gui.player.GuiNPCBankChest;
-import noppes.npcs.client.gui.player.GuiAuctionBidding;
-import noppes.npcs.client.gui.player.GuiAuctionTrades;
-import noppes.npcs.client.gui.player.GuiAuctionListing;
-import noppes.npcs.client.gui.player.GuiAuctionSell;
 import noppes.npcs.client.gui.player.GuiNPCTrader;
 import noppes.npcs.client.gui.player.GuiNpcAnvil;
 import noppes.npcs.client.gui.player.GuiNpcCarpentryBench;
@@ -133,6 +159,8 @@ import noppes.npcs.client.gui.roles.GuiNpcTransporter;
 import noppes.npcs.client.gui.script.GuiScriptGlobal;
 import noppes.npcs.client.gui.script.GuiScriptInterface;
 import noppes.npcs.client.gui.util.script.PackageFinder;
+import noppes.npcs.client.gui.util.script.interpreter.js_parser.JSTypeRegistry;
+import noppes.npcs.client.gui.util.script.interpreter.type.ClassIndex;
 import noppes.npcs.client.model.ModelNPCGolem;
 import noppes.npcs.client.model.ModelNpcCrystal;
 import noppes.npcs.client.model.ModelNpcDragon;
@@ -146,17 +174,6 @@ import noppes.npcs.client.renderer.RenderNpcCrystal;
 import noppes.npcs.client.renderer.RenderNpcDragon;
 import noppes.npcs.client.renderer.RenderNpcSlime;
 import noppes.npcs.client.renderer.RenderProjectile;
-import kamkeel.npcs.client.renderer.RenderAbilityOrb;
-import kamkeel.npcs.client.renderer.RenderAbilityDisc;
-import kamkeel.npcs.client.renderer.RenderAbilityLaser;
-import kamkeel.npcs.client.renderer.RenderAbilityBeam;
-import kamkeel.npcs.client.renderer.RenderAbilitySweeper;
-import kamkeel.npcs.client.renderer.lightning.LightningHandler;
-import kamkeel.npcs.entity.EntityAbilityOrb;
-import kamkeel.npcs.entity.EntityAbilityDisc;
-import kamkeel.npcs.entity.EntityAbilityLaser;
-import kamkeel.npcs.entity.EntityAbilityBeam;
-import kamkeel.npcs.entity.EntityAbilitySweeper;
 import noppes.npcs.client.renderer.blocks.BlockBannerRenderer;
 import noppes.npcs.client.renderer.blocks.BlockBarrelRenderer;
 import noppes.npcs.client.renderer.blocks.BlockBeamRenderer;
@@ -192,18 +209,22 @@ import noppes.npcs.client.renderer.items.ItemShortLampRenderer;
 import noppes.npcs.client.renderer.items.ItemTallLampRenderer;
 import noppes.npcs.client.renderer.items.ItemToolRenderer;
 import noppes.npcs.client.renderer.items.ScriptedBlockItemRenderer;
-import noppes.npcs.client.ScriptClientConfig;
 import noppes.npcs.config.ConfigClient;
 import noppes.npcs.config.ConfigItem;
 import noppes.npcs.config.ConfigMain;
 import noppes.npcs.config.StringCache;
 import noppes.npcs.constants.EnumGuiType;
 import noppes.npcs.containers.ContainerAnvilRepair;
+import noppes.npcs.containers.ContainerAuctionBidding;
+import noppes.npcs.containers.ContainerAuctionListing;
+import noppes.npcs.containers.ContainerAuctionSell;
+import noppes.npcs.containers.ContainerAuctionTrades;
 import noppes.npcs.containers.ContainerCarpentryBench;
 import noppes.npcs.containers.ContainerCrate;
 import noppes.npcs.containers.ContainerCustomGui;
 import noppes.npcs.containers.ContainerMail;
 import noppes.npcs.containers.ContainerManageBanks;
+import noppes.npcs.containers.ContainerManageAuction;
 import noppes.npcs.containers.ContainerManageRecipes;
 import noppes.npcs.containers.ContainerNPCBankInterface;
 import noppes.npcs.containers.ContainerNPCCompanion;
@@ -211,11 +232,6 @@ import noppes.npcs.containers.ContainerNPCFollower;
 import noppes.npcs.containers.ContainerNPCFollowerHire;
 import noppes.npcs.containers.ContainerNPCFollowerSetup;
 import noppes.npcs.containers.ContainerNPCInv;
-import noppes.npcs.containers.ContainerAuction;
-import noppes.npcs.containers.ContainerAuctionBidding;
-import noppes.npcs.containers.ContainerAuctionTrades;
-import noppes.npcs.containers.ContainerAuctionListing;
-import noppes.npcs.containers.ContainerAuctionSell;
 import noppes.npcs.containers.ContainerNPCTrader;
 import noppes.npcs.containers.ContainerNPCTraderSetup;
 import noppes.npcs.containers.ContainerNpcItemGiver;
@@ -251,6 +267,9 @@ import java.util.Random;
 public class ClientProxy extends CommonProxy {
     public static KeyBinding NPCButton;
     public static KeyBinding SpecialKey;
+    public static KeyBinding AbilityHudKey;
+    public static KeyBinding AbilityNextKey;
+    public static KeyBinding AbilityPrevKey;
     public static final Random RAND = new Random();
     public static FontContainer Font;
 
@@ -265,17 +284,23 @@ public class ClientProxy extends CommonProxy {
         RenderingRegistry.registerEntityRenderingHandler(EntityNpcDragon.class, new RenderNpcDragon(new ModelNpcDragon(0.0F), 0.5F));
         RenderingRegistry.registerEntityRenderingHandler(EntityNpcSlime.class, new RenderNpcSlime(new ModelNpcSlime(16), new ModelNpcSlime(0), 0.25F));
         RenderingRegistry.registerEntityRenderingHandler(EntityProjectile.class, new RenderProjectile());
-        RenderingRegistry.registerEntityRenderingHandler(EntityAbilityOrb.class, new RenderAbilityOrb());
-        RenderingRegistry.registerEntityRenderingHandler(EntityAbilityDisc.class, new RenderAbilityDisc());
-        RenderingRegistry.registerEntityRenderingHandler(EntityAbilityLaser.class, new RenderAbilityLaser());
-        RenderingRegistry.registerEntityRenderingHandler(EntityAbilityBeam.class, new RenderAbilityBeam());
-        RenderingRegistry.registerEntityRenderingHandler(EntityAbilitySweeper.class, new RenderAbilitySweeper());
+        RenderingRegistry.registerEntityRenderingHandler(EntityAbilityOrb.class, new RenderEnergyOrb());
+        RenderingRegistry.registerEntityRenderingHandler(EntityAbilityDisc.class, new RenderEnergyDisc());
+        RenderingRegistry.registerEntityRenderingHandler(EntityAbilityLaser.class, new RenderEnergyLaser());
+        RenderingRegistry.registerEntityRenderingHandler(EntityAbilityBeam.class, new RenderEnergyBeam());
+        RenderingRegistry.registerEntityRenderingHandler(EntityEnergySweeper.class, new RenderSweeper());
+        RenderingRegistry.registerEntityRenderingHandler(EntityAbilityZone.class, new RenderZone());
+        RenderingRegistry.registerEntityRenderingHandler(EntityEnergyDome.class, new RenderEnergyDome());
+        RenderingRegistry.registerEntityRenderingHandler(EntityEnergyPanel.class, new RenderEnergyPanel());
+        RenderingRegistry.registerEntityRenderingHandler(EntityEnergySlicer.class, new RenderEnergySlicer());
+        RenderingRegistry.registerEntityRenderingHandler(EntityEnergyExplosion.class, new RenderEnergyExplosion());
 
         RenderingRegistry.registerEntityRenderingHandler(EntityCustomNpc.class, new RenderCustomNpc());
 
         RenderingRegistry.registerEntityRenderingHandler(EntityNPCGolem.class, new RenderNPCHumanMale(
             new ModelNPCGolem(0), new ModelNPCGolem(1F), new ModelNPCGolem(0.5F)));
         FMLCommonHandler.instance().bus().register(new ClientTickHandler());
+        FMLCommonHandler.instance().bus().register(new KeyPressHandler());
 
         ClientRegistry.bindTileEntitySpecialRenderer(TileBlockAnvil.class, new BlockCarpentryBenchRenderer());
         ClientRegistry.bindTileEntitySpecialRenderer(TileMailbox.class, new BlockMailboxRenderer());
@@ -321,10 +346,18 @@ public class ClientProxy extends CommonProxy {
         }
 
         NPCButton = new KeyBinding("NPC Inventory", Keyboard.KEY_N, "key.categories.customnpc");
-        SpecialKey = new KeyBinding("key.customnpcs.special", Keyboard.KEY_B, "key.categories.customnpc");
+        SpecialKey = new KeyBinding("key.customnpcs.special", Keyboard.KEY_GRAVE, "key.categories.customnpc");
 
         ClientRegistry.registerKeyBinding(NPCButton);
         ClientRegistry.registerKeyBinding(SpecialKey);
+
+        AbilityHudKey = new KeyBinding("key.customnpcs.abilityHudKey", Keyboard.KEY_LMENU, "key.categories.customnpc");
+        ClientRegistry.registerKeyBinding(AbilityHudKey);
+
+        AbilityNextKey = new KeyBinding("key.customnpcs.abilityNext", Keyboard.KEY_NONE, "key.categories.customnpc");
+        AbilityPrevKey = new KeyBinding("key.customnpcs.abilityPrev", Keyboard.KEY_NONE, "key.categories.customnpc");
+        ClientRegistry.registerKeyBinding(AbilityNextKey);
+        ClientRegistry.registerKeyBinding(AbilityPrevKey);
 
         new PresetController(CustomNpcs.Dir);
 
@@ -337,20 +370,19 @@ public class ClientProxy extends CommonProxy {
         ClientTagMapController.Instance = new ClientTagMapController();
         MinecraftForge.EVENT_BUS.register(new ClientEventHandler());
 
+        // Debug commands
+        ClientCommandHandler.instance.registerCommand(new CommandCNPCDebugger());
+
         // Telegraph rendering system
         TelegraphManager.initClient();
         MinecraftForge.EVENT_BUS.register(new TelegraphRenderer());
 
+        // Energy charge preview rendering system
+        EnergyChargePreviewManager.initClient();
+        MinecraftForge.EVENT_BUS.register(new EnergyChargePreviewRenderer());
+
         // Lightning effect rendering system
         MinecraftForge.EVENT_BUS.register(new LightningHandler());
-
-        if (ConfigClient.InventoryGuiEnabled) {
-            MinecraftForge.EVENT_BUS.register(new TabRegistry());
-            if (TabRegistry.getTabList().isEmpty()) {
-                TabRegistry.registerTab(new InventoryTabVanilla());
-            }
-            TabRegistry.registerTab(new InventoryTabCustomNpc());
-        }
     }
 
     public FakePlayer getCommandPlayer(IWorld world) {
@@ -390,7 +422,8 @@ public class ClientProxy extends CommonProxy {
 
     @Override
     public PlayerData getPlayerData(EntityPlayer player) {
-        if (player.getUniqueID() == Minecraft.getMinecraft().thePlayer.getUniqueID()) {
+        EntityPlayer local = Minecraft.getMinecraft().thePlayer;
+        if (local != null && player.getUniqueID().equals(local.getUniqueID())) {
             if (ClientCacheHandler.playerData != null) {
                 if (ClientCacheHandler.playerData.player != player) {
                     ClientCacheHandler.playerData.player = player;
@@ -486,6 +519,9 @@ public class ClientProxy extends CommonProxy {
         else if (gui == EnumGuiType.ManageRecipes)
             return new GuiNpcManageRecipes(npc, (ContainerManageRecipes) container);
 
+        else if (gui == EnumGuiType.ManageAuction)
+            return new GuiNpcManageAuction(npc, (ContainerManageAuction) container);
+
         else if (gui == EnumGuiType.ManageDialogs)
             return new GuiNPCManageDialogs(npc);
 
@@ -512,9 +548,7 @@ public class ClientProxy extends CommonProxy {
                 abilityNpc.width = 0.6f;
             }
             return new GuiNpcManageAbilities(abilityNpc, npc != null);
-        }
-
-        else if (gui == EnumGuiType.MainMenuGlobal)
+        } else if (gui == EnumGuiType.MainMenuGlobal)
             return new GuiNPCGlobalMainMenu(npc);
 
         else if (gui == EnumGuiType.MainMenuAI)
@@ -816,9 +850,24 @@ public class ClientProxy extends CommonProxy {
         return Minecraft.getMinecraft().currentScreen != null;
     }
 
+    @Override
+    public void loadComplete() {
+        // Deferred from load() so TConstruct has registered its own tabs first - registering
+        // ours before it left the vanilla tab duplicated.
+        if (ConfigClient.InventoryGuiEnabled) {
+            MinecraftForge.EVENT_BUS.register(new TabRegistry());
+            if (TabRegistry.getTabList().isEmpty()) {
+                TabRegistry.registerTab(new InventoryTabVanilla());
+            }
+            TabRegistry.registerTab(new InventoryTabCustomNpc());
+        }
+    }
+
     public void buildPackageIndex() {
         try {
             PackageFinder.init(Thread.currentThread().getContextClassLoader());
+            ClassIndex.init();
+            JSTypeRegistry.getInstance().initializeFromResources();
         } catch (IOException e) {
         }
     }
@@ -882,6 +931,28 @@ public class ClientProxy extends CommonProxy {
             return Minecraft.getMinecraft().fontRenderer.getStringWidth(text);
         }
 
+        /**
+         * Return the width of a string when rendered with the specified font style (bold/italic).
+         *
+         * @param text      the string to measure
+         * @param fontStyle combination of {@link java.awt.Font#BOLD} and {@link java.awt.Font#ITALIC},
+         *                  or {@link java.awt.Font#PLAIN} for normal style
+         * @return the width in pixels
+         */
+        public int width(String text, int fontStyle) {
+            if (useCustomFont)
+                return textFont.getStringWidth(text, fontStyle);
+            if (fontStyle == java.awt.Font.PLAIN)
+                return Minecraft.getMinecraft().fontRenderer.getStringWidth(text);
+            StringBuilder sb = new StringBuilder();
+            if ((fontStyle & java.awt.Font.BOLD) != 0)
+                sb.append('\u00A7').append('l');
+            if ((fontStyle & java.awt.Font.ITALIC) != 0)
+                sb.append('\u00A7').append('o');
+            sb.append(text);
+            return Minecraft.getMinecraft().fontRenderer.getStringWidth(sb.toString());
+        }
+
         public FontContainer copy() {
             FontContainer font = new FontContainer();
             font.textFont = textFont;
@@ -891,7 +962,7 @@ public class ClientProxy extends CommonProxy {
 
         public void drawString(String text, int x, int y, int color) {
             if (useCustomFont) {
-                textFont.renderString(text, x, y, color, true);
+               // textFont.renderString(text, x, y, color, true);
                 textFont.renderString(text, x, y, color, false);
             } else {
                 Minecraft.getMinecraft().fontRenderer.drawStringWithShadow(text, x, y, color);

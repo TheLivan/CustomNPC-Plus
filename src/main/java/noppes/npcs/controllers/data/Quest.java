@@ -1,7 +1,6 @@
 package noppes.npcs.controllers.data;
 
-import kamkeel.npcs.controllers.ProfileController;
-import kamkeel.npcs.controllers.data.profile.Profile;
+import noppes.npcs.client.ProfileClientConfig;
 import kamkeel.npcs.network.packets.data.QuestCompletionPacket;
 import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.entity.player.EntityPlayerMP;
@@ -22,7 +21,6 @@ import noppes.npcs.api.handler.data.IQuestCategory;
 import noppes.npcs.api.handler.data.IQuestInterface;
 import noppes.npcs.api.handler.data.IQuestObjective;
 import noppes.npcs.api.handler.data.ISlot;
-import noppes.npcs.config.ConfigMain;
 import noppes.npcs.constants.EnumProfileSync;
 import noppes.npcs.constants.EnumQuestCompletion;
 import noppes.npcs.constants.EnumQuestRepeat;
@@ -176,19 +174,50 @@ public class Quest implements ICompatibilty, IQuest {
     }
 
     public long getTimeUntilRepeat(EntityPlayer player) {
-        if (ConfigMain.ProfilesEnabled && profileOptions.enableOptions && profileOptions.cooldownControl == EnumProfileSync.Shared) {
-            Profile profile = ProfileController.Instance.getProfile(player);
-            IPlayer iPlayer = NoppesUtilServer.getIPlayer(player);
-            long timeRemaining = 0L;
-            for (ISlot slot : profile.getSlots().values()) {
-                IPlayerData playerData = ProfileController.Instance.getSlotPlayerData(iPlayer, slot.getId());
-                IPlayerQuestData iPlayerQuestData = playerData.getQuestData();
-                timeRemaining = Math.max(timeRemaining, getTimeUntilRepeatQuestData(player, iPlayerQuestData));
+        if (ProfileClientConfig.isProfilesEnabled() && profileOptions.enableOptions
+                && profileOptions.cooldownControl == EnumProfileSync.Shared) {
+            Long questTime = ProfileClientConfig.getSharedQuestTimestamp(player, this.id);
+            if (questTime != null) {
+                return calculateRemainingCooldown(player, questTime);
             }
-            return timeRemaining;
+            return 0L;
         }
         IPlayerQuestData questData = PlayerData.get(player).getQuestData();
         return getTimeUntilRepeatQuestData(player, questData);
+    }
+
+    public long calculateRemainingCooldown(EntityPlayer player, long questTime) {
+        switch (repeat) {
+            case MCDAILY: {
+                long now = player.worldObj.getTotalWorldTime();
+                long remainingTicks = questTime + 24000 - now;
+                return Math.max(0, remainingTicks * 50);
+            }
+            case MCWEEKLY: {
+                long now = player.worldObj.getTotalWorldTime();
+                long remainingTicks = questTime + 168000 - now;
+                return Math.max(0, remainingTicks * 50);
+            }
+            case MCCUSTOM: {
+                long now = player.worldObj.getTotalWorldTime();
+                long remainingTicks = questTime + this.customCooldown - now;
+                return Math.max(0, remainingTicks * 50);
+            }
+            case RLDAILY: {
+                long remainingMillis = questTime + 86400000 - System.currentTimeMillis();
+                return Math.max(0, remainingMillis);
+            }
+            case RLWEEKLY: {
+                long remainingMillis = questTime + 604800000 - System.currentTimeMillis();
+                return Math.max(0, remainingMillis);
+            }
+            case RLCUSTOM: {
+                long remainingMillis = questTime + this.customCooldown - System.currentTimeMillis();
+                return Math.max(0, remainingMillis);
+            }
+            default:
+                return 0L;
+        }
     }
 
     public long getTimeUntilRepeatQuestData(EntityPlayer player, IPlayerQuestData questData) {

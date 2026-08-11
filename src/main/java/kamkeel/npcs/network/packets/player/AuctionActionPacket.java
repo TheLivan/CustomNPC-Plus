@@ -17,6 +17,7 @@ import net.minecraft.nbt.NBTTagCompound;
 import net.minecraft.nbt.NBTTagList;
 import noppes.npcs.NoppesUtilServer;
 import noppes.npcs.config.ConfigMarket;
+import noppes.npcs.constants.EnumAuctionPage;
 import noppes.npcs.constants.EnumGuiType;
 import noppes.npcs.constants.EnumRoleType;
 import noppes.npcs.controllers.AuctionController;
@@ -39,7 +40,8 @@ public class AuctionActionPacket extends AbstractPacket {
     private long amount;
     private NBTTagCompound data;
 
-    public AuctionActionPacket() {}
+    public AuctionActionPacket() {
+    }
 
     private AuctionActionPacket(Action action) {
         this.action = action;
@@ -57,7 +59,9 @@ public class AuctionActionPacket extends AbstractPacket {
     }
 
     @Override
-    public boolean needsNPC() { return false; }  // Allow opening via command without NPC
+    public boolean needsNPC() {
+        return false;
+    }  // Allow opening via command without NPC
 
     // =========================================
     // Client-side static methods
@@ -116,7 +120,9 @@ public class AuctionActionPacket extends AbstractPacket {
         PacketClient.sendClient(packet);
     }
 
-    /** Request listings from server with filter and page */
+    /**
+     * Request listings from server with filter and page
+     */
     @SideOnly(Side.CLIENT)
     public static void requestListings(AuctionFilter filter, int page) {
         AuctionActionPacket packet = new AuctionActionPacket(Action.RequestListings);
@@ -130,10 +136,14 @@ public class AuctionActionPacket extends AbstractPacket {
     // =========================================
 
     @Override
-    public Enum getType() { return EnumPlayerPacket.AuctionAction; }
+    public Enum getType() {
+        return EnumPlayerPacket.AuctionAction;
+    }
 
     @Override
-    public PacketChannel getChannel() { return PacketHandler.PLAYER_PACKET; }
+    public PacketChannel getChannel() {
+        return PacketHandler.PLAYER_PACKET;
+    }
 
     @Override
     @SideOnly(Side.CLIENT)
@@ -290,13 +300,20 @@ public class AuctionActionPacket extends AbstractPacket {
         long startingPrice = in.readLong();
         String buyoutStr = ByteBufUtils.readString(in);
         long buyoutPrice = 0;
-        try { buyoutPrice = Long.parseLong(buyoutStr); } catch (NumberFormatException ignored) {}
+        try {
+            buyoutPrice = Long.parseLong(buyoutStr);
+        } catch (NumberFormatException ignored) {
+        }
 
         NBTTagCompound itemNBT = ByteBufUtils.readNBT(in);
         if (itemNBT == null) return "No item data received.";
 
         ItemStack item = ItemStack.loadItemStackFromNBT(itemNBT);
         if (item == null) return "Invalid item data.";
+
+        // Validate stack size
+        if (item.stackSize <= 0) return "Invalid item amount.";
+        if (item.stackSize > item.getMaxStackSize()) return "Stack size exceeds item maximum.";
 
         // Remove item from inventory first
         if (!removeItemFromInventory(player, item)) {
@@ -315,13 +332,8 @@ public class AuctionActionPacket extends AbstractPacket {
 
     private void handleOpenPage(ByteBuf in, EntityPlayerMP player) {
         int page = in.readInt();
-        EnumGuiType guiType;
-        switch (page) {
-            case 0: guiType = EnumGuiType.PlayerAuction; break;
-            case 1: guiType = EnumGuiType.PlayerAuctionSell; break;
-            case 2: guiType = EnumGuiType.PlayerAuctionTrades; break;
-            default: guiType = EnumGuiType.PlayerAuction; break;
-        }
+        EnumAuctionPage auctionPage = EnumAuctionPage.fromOrdinal(page);
+        EnumGuiType guiType = auctionPage.getGuiType();
         NoppesUtilServer.sendOpenGui(player, guiType, npc);
 
         // Send trades data when opening the trades page
@@ -333,7 +345,9 @@ public class AuctionActionPacket extends AbstractPacket {
         }
     }
 
-    /** Send full trades data to player (listings, bids, claims) */
+    /**
+     * Send full trades data to player (listings, bids, claims)
+     */
     private void sendTradesData(EntityPlayerMP player, AuctionController controller) {
         NBTTagCompound response = new NBTTagCompound();
         response.setBoolean("TradesData", true);
@@ -481,6 +495,9 @@ public class AuctionActionPacket extends AbstractPacket {
             } else {
                 // Need only part of stack
                 stack.splitStack(needed);
+                if (stack.stackSize <= 0) {
+                    player.inventory.setInventorySlotContents(i, null);
+                }
                 needed = 0;
             }
         }

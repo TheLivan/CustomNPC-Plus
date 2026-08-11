@@ -1,9 +1,9 @@
 package noppes.npcs;
 
 import io.netty.buffer.ByteBuf;
+import kamkeel.npcs.controllers.AbilityController;
 import kamkeel.npcs.controllers.SyncController;
 import kamkeel.npcs.controllers.data.ability.Ability;
-import kamkeel.npcs.controllers.data.ability.AbilityController;
 import kamkeel.npcs.network.PacketHandler;
 import kamkeel.npcs.network.packets.data.ParticlePacket;
 import kamkeel.npcs.network.packets.data.PlayerDataInfoPacket;
@@ -613,7 +613,7 @@ public class NoppesUtilServer {
             playerdata.save();
         }
         if (pl != null) {
-            SyncController.syncPlayer((EntityPlayerMP) pl);
+            SyncController.dispatchSyncForAllTypes((EntityPlayerMP) pl);
         }
         sendPlayerData(type, player, name);
     }
@@ -754,27 +754,49 @@ public class NoppesUtilServer {
         if (controller != null) {
             int index = 0;
             for (String typeId : controller.getTypes()) {
+                if (!controller.isAllowedByNPC(typeId) && !controller.isAllowedByBoth(typeId))
+                    continue;
+
                 map.put(typeId, index++);
             }
         }
         sendScrollData(player, map, EnumScrollData.ABILITY_TYPES);
     }
 
+    public static void sendBuiltInAbilitiesData(EntityPlayerMP player) {
+        HashMap<String, Integer> map = new HashMap<String, Integer>();
+        AbilityController controller = AbilityController.Instance;
+        if (controller != null) {
+            for (String name : controller.getAbilityNames()) {
+                Ability ability = controller.getAbility(name);
+                if (ability != null) {
+                    map.put(ability.getName(), ability.getAllowedBy().ordinal());
+                }
+            }
+        }
+        sendScrollData(player, map, EnumScrollData.BUILTIN_ABILITIES);
+    }
+
     public static void sendCustomAbilitiesData(EntityPlayerMP player) {
         HashMap<String, Integer> map = new HashMap<String, Integer>();
-        kamkeel.npcs.controllers.data.ability.AbilityController controller = kamkeel.npcs.controllers.data.ability.AbilityController.Instance;
+        AbilityController controller = AbilityController.Instance;
         if (controller != null) {
-            int index = 0;
-            for (String uuid : controller.getCustomAbilityIds()) {
-                Ability ability = controller.getCustomAbility(uuid);
-                if (ability == null || !ability.getAllowedBy().allowsNpc()) continue;
-
-                String name = controller.getCustomAbilityName(uuid);
-                if (name == null || name.isEmpty()) name = uuid;
-                map.put(name + "\t" + uuid, index++);
+            for (String name : controller.getCustomAbilityNames()) {
+                Ability ability = controller.getCustomAbility(name);
+                if (ability == null) continue;
+                map.put(name, ability.getAllowedBy().ordinal());
             }
         }
         sendScrollData(player, map, EnumScrollData.CUSTOM_ABILITIES);
+    }
+
+    public static void sendChainedAbilitiesData(EntityPlayerMP player) {
+        HashMap<String, Integer> map = new HashMap<String, Integer>();
+        int index = 0;
+        for (String name : AbilityController.Instance.getChainedAbilityNamesSet()) {
+            map.put(name, index++);
+        }
+        sendScrollData(player, map, EnumScrollData.CHAINED_ABILITIES);
     }
 
     public static DialogOption setNpcDialog(int slot, int dialogId, EntityPlayer player) throws IOException {
@@ -1180,7 +1202,7 @@ public class NoppesUtilServer {
         playerdata.save();
 
         if (pl != null) {
-            SyncController.syncPlayer((EntityPlayerMP) pl);
+            SyncController.dispatchSyncForAllTypes((EntityPlayerMP) pl);
         }
     }
 
@@ -1212,7 +1234,7 @@ public class NoppesUtilServer {
 
         playerdata.save();
         if (pl != null) {
-            SyncController.syncPlayer((EntityPlayerMP) pl);
+            SyncController.dispatchSyncForAllTypes((EntityPlayerMP) pl);
         }
     }
 }

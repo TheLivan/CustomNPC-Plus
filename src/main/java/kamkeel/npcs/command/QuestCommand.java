@@ -2,6 +2,7 @@ package kamkeel.npcs.command;
 
 import kamkeel.npcs.controllers.ProfileController;
 import kamkeel.npcs.controllers.SyncController;
+import kamkeel.npcs.network.enums.SyncType;
 import kamkeel.npcs.network.packets.data.AchievementPacket;
 import kamkeel.npcs.network.packets.data.ChatAlertPacket;
 import net.minecraft.command.CommandException;
@@ -115,7 +116,9 @@ public class QuestCommand extends CommandKamkeelBase {
                 playerdata.questData.finishedQuests.put(quest.id, completeTime);
             }
 
-            if (ConfigMain.ProfilesEnabled && playerdata.player != null && quest.profileOptions.enableOptions && quest.profileOptions.completeControl == EnumProfileSync.Shared)
+            if (ConfigMain.ProfilesEnabled && playerdata.player != null && quest.profileOptions.enableOptions
+                    && (quest.profileOptions.completeControl == EnumProfileSync.Shared
+                        || quest.profileOptions.cooldownControl == EnumProfileSync.Shared))
                 ProfileController.Instance.shareQuestCompletion(playerdata.player, quest.id, completeTime);
 
             playerdata.save();
@@ -391,7 +394,7 @@ public class QuestCommand extends CommandKamkeelBase {
     )
     public void reload(ICommandSender sender, String args[]) {
         new QuestController().load();
-        SyncController.syncAllQuests();
+        SyncController.syncAll(SyncType.QUEST_CATEGORY);
         sendResult(sender, "Quests Reloaded");
     }
 }

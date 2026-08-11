@@ -3,19 +3,17 @@ package kamkeel.npcs.controllers.data.ability.type;
 import cpw.mods.fml.relauncher.Side;
 import cpw.mods.fml.relauncher.SideOnly;
 import kamkeel.npcs.controllers.data.ability.Ability;
-import kamkeel.npcs.controllers.data.ability.LockMovementType;
-import kamkeel.npcs.controllers.data.ability.TargetingMode;
+import kamkeel.npcs.controllers.data.ability.util.AbilityTargetHelper;
+import kamkeel.npcs.controllers.data.ability.enums.LockMode;
+import kamkeel.npcs.controllers.data.ability.enums.TargetFilter;
+import kamkeel.npcs.controllers.data.ability.enums.TargetingMode;
+import kamkeel.npcs.controllers.data.ability.gui.AbilityFieldDefs;
 import kamkeel.npcs.controllers.data.telegraph.TelegraphType;
 import net.minecraft.entity.EntityLivingBase;
 import net.minecraft.nbt.NBTTagCompound;
 import net.minecraft.util.AxisAlignedBB;
-import net.minecraft.util.DamageSource;
-import net.minecraft.world.World;
-import noppes.npcs.entity.EntityNPCInterface;
-
-import noppes.npcs.client.gui.builder.FieldDef;
-import kamkeel.npcs.controllers.data.ability.gui.AbilityFieldDefs;
 import noppes.npcs.api.ability.type.IAbilityShockwave;
+import noppes.npcs.client.gui.builder.FieldDef;
 
 import java.util.Arrays;
 import java.util.List;
@@ -29,14 +27,15 @@ public class AbilityShockwave extends Ability implements IAbilityShockwave {
     private float pushRadius = 8.0f;
     private float pushStrength = 1.5f;
     private float damage = 8.0f;
-    private int maxTargets = 10;
+    private boolean aoe = true;
+    private int activeDisplayTicks = 10;
 
     public AbilityShockwave() {
         this.typeId = "ability.cnpc.shockwave";
         this.name = "Shockwave";
         this.targetingMode = TargetingMode.AOE_SELF;
-        this.maxRange = 15.0f;
-        this.lockMovement = LockMovementType.WINDUP_AND_ACTIVE;
+        this.maxRange = 8.0f;
+        this.lockMovement = LockMode.WINDUP_AND_ACTIVE;
         this.cooldownTicks = 0;
         this.windUpTicks = 25;
         this.telegraphType = TelegraphType.CIRCLE;
@@ -44,6 +43,11 @@ public class AbilityShockwave extends Ability implements IAbilityShockwave {
         this.activeSound = "random.explode";
         this.windUpAnimationName = "Ability_Shockwave_Windup";
         this.activeAnimationName = "Ability_Shockwave_Active";
+        this.defaultIconLayers = new DefaultIconLayer[]{
+            new DefaultIconLayer("customnpcs:textures/gui/ability/shockwave.png"),
+            new DefaultIconLayer("customnpcs:textures/gui/ability/shockwave_overlay.png",
+                this::getActiveColor)
+        };
     }
 
     @Override
@@ -62,58 +66,91 @@ public class AbilityShockwave extends Ability implements IAbilityShockwave {
     }
 
     @Override
-    public void onExecute(EntityLivingBase caster, EntityLivingBase target, World world) {
-        if (!isPreview()) {
+    public void onExecute(EntityLivingBase caster, EntityLivingBase target) {
+        if (!isPreview() && !caster.worldObj.isRemote) {
             // Shockwave is instant - apply effect immediately after windup
 
             // Get all entities in radius
             AxisAlignedBB box = caster.boundingBox.expand(pushRadius, pushRadius / 2, pushRadius);
             @SuppressWarnings("unchecked")
-            List<EntityLivingBase> entities = world.getEntitiesWithinAABB(EntityLivingBase.class, box);
+            List<EntityLivingBase> entities = caster.worldObj.getEntitiesWithinAABB(EntityLivingBase.class, box);
 
-            int count = 0;
-            for (EntityLivingBase entity : entities) {
-                if (entity == caster) continue;
-                if (entity.isDead) continue;
+            if (aoe) {
+                // ALL: push every valid enemy in range
+                for (EntityLivingBase entity : entities) {
+                    if (entity == caster) continue;
+                    if (entity.isDead) continue;
+                    if (!AbilityTargetHelper.shouldAffect(caster, entity, TargetFilter.ENEMIES, false)) continue;
 
-                double dist = caster.getDistanceToEntity(entity);
-                if (dist > pushRadius) continue;
+                    double dist = caster.getDistanceToEntity(entity);
+                    if (dist > pushRadius) continue;
 
-                count++;
-                if (count > maxTargets) break;
-
-                // Calculate push direction (away from caster)
-                double dx = entity.posX - caster.posX;
-                double dz = entity.posZ - caster.posZ;
-                double len = Math.sqrt(dx * dx + dz * dz);
-
-                if (len > 0) {
-                    dx /= len;
-                    dz /= len;
-                } else {
-                    // Entity is directly on top of caster, push in random direction
-                    double angle = Math.random() * Math.PI * 2;
-                    dx = Math.cos(angle);
-                    dz = Math.sin(angle);
+                    applyShockwavePush(caster, entity, dist);
+                }
+            } else {
+                // SINGULAR: push one target
+                // NPC: push aggro target if valid, otherwise nearest enemy
+                // Player: push nearest enemy in range
+                if (!isPlayerCaster(caster) && target != null && !target.isDead) {
+                    double dist = caster.getDistanceToEntity(target);
+                    if (dist <= pushRadius && AbilityTargetHelper.shouldAffect(caster, target, TargetFilter.ENEMIES, false)) {
+                        applyShockwavePush(caster, target, dist);
+                        return;
+                    }
                 }
 
-                // Scale knockback by distance (closer = stronger)
-                float distFactor = 1.0f - (float) (dist / pushRadius) * 0.5f;
-                float finalPush = pushStrength * distFactor;
-                // Apply damage with custom knockback direction
-                boolean wasHit = applyAbilityDamageWithDirection(caster, entity, damage * distFactor, finalPush, dx, dz);
+                // Find nearest valid enemy
+                EntityLivingBase nearest = null;
+                double nearestDist = Double.MAX_VALUE;
+                for (EntityLivingBase entity : entities) {
+                    if (entity == caster) continue;
+                    if (entity.isDead) continue;
+                    if (!AbilityTargetHelper.shouldAffect(caster, entity, TargetFilter.ENEMIES, false)) continue;
 
-                // Apply effects if hit connected
-                if (wasHit) {
-                    applyEffects(entity);
+                    double dist = caster.getDistanceToEntity(entity);
+                    if (dist <= pushRadius && dist < nearestDist) {
+                        nearest = entity;
+                        nearestDist = dist;
+                    }
+                }
+                if (nearest != null) {
+                    applyShockwavePush(caster, nearest, nearestDist);
                 }
             }
         }
     }
 
+    private void applyShockwavePush(EntityLivingBase caster, EntityLivingBase entity, double dist) {
+        // Calculate push direction (away from caster)
+        double dx = entity.posX - caster.posX;
+        double dz = entity.posZ - caster.posZ;
+        double len = Math.sqrt(dx * dx + dz * dz);
+
+        if (len > 0) {
+            dx /= len;
+            dz /= len;
+        } else {
+            // Entity is directly on top of caster, push in random direction
+            double angle = Math.random() * Math.PI * 2;
+            dx = Math.cos(angle);
+            dz = Math.sin(angle);
+        }
+
+        // Scale knockback by distance (closer = stronger)
+        float distFactor = 1.0f - (float) (dist / pushRadius) * 0.5f;
+        float finalPush = pushStrength * distFactor;
+        // Apply damage with custom knockback direction
+        boolean wasHit = applyAbilityDamageWithDirection(caster, entity, damage * distFactor, finalPush, dx, dz);
+
+        // Apply effects if hit connected
+        if (wasHit) {
+            applyEffects(entity);
+        }
+    }
+
     @Override
-    public void onActiveTick(EntityLivingBase caster, EntityLivingBase target, World world, int tick) {
-        if (tick == 10)
+    public void onActiveTick(EntityLivingBase caster, EntityLivingBase target, int tick) {
+        if (tick >= activeDisplayTicks)
             signalCompletion();
     }
 
@@ -122,15 +159,17 @@ public class AbilityShockwave extends Ability implements IAbilityShockwave {
         nbt.setFloat("pushRadius", pushRadius);
         nbt.setFloat("pushStrength", pushStrength);
         nbt.setFloat("damage", damage);
-        nbt.setInteger("maxTargets", maxTargets);
+        nbt.setBoolean("aoe", aoe);
+        nbt.setInteger("activeDisplayTicks", activeDisplayTicks);
     }
 
     @Override
     public void readTypeNBT(NBTTagCompound nbt) {
-        this.pushRadius = nbt.hasKey("pushRadius") ? nbt.getFloat("pushRadius") : 8.0f;
-        this.pushStrength = nbt.hasKey("pushStrength") ? nbt.getFloat("pushStrength") : 1.5f;
-        this.damage = nbt.hasKey("damage") ? nbt.getFloat("damage") : 8.0f;
-        this.maxTargets = nbt.hasKey("maxTargets") ? nbt.getInteger("maxTargets") : 10;
+        this.pushRadius = nbt.getFloat("pushRadius");
+        this.pushStrength = nbt.getFloat("pushStrength");
+        this.damage = nbt.getFloat("damage");
+        this.aoe = !nbt.hasKey("aoe") || nbt.getBoolean("aoe");
+        this.activeDisplayTicks = nbt.hasKey("activeDisplayTicks") ? nbt.getInteger("activeDisplayTicks") : 10;
     }
 
     // Getters & Setters
@@ -158,12 +197,23 @@ public class AbilityShockwave extends Ability implements IAbilityShockwave {
         this.damage = damage;
     }
 
-    public int getMaxTargets() {
-        return maxTargets;
+    @Override
+    public float getDisplayDamage() { return damage; }
+
+    public boolean isAoe() {
+        return aoe;
     }
 
-    public void setMaxTargets(int maxTargets) {
-        this.maxTargets = maxTargets;
+    public void setAoe(boolean aoe) {
+        this.aoe = aoe;
+    }
+
+    public int getActiveDisplayTicks() {
+        return activeDisplayTicks;
+    }
+
+    public void setActiveDisplayTicks(int activeDisplayTicks) {
+        this.activeDisplayTicks = activeDisplayTicks;
     }
 
     @SideOnly(Side.CLIENT)
@@ -176,7 +226,10 @@ public class AbilityShockwave extends Ability implements IAbilityShockwave {
                 FieldDef.floatField("gui.radius", this::getPushRadius, this::setPushRadius),
                 FieldDef.floatField("gui.strength", this::getPushStrength, this::setPushStrength)
             ),
-            FieldDef.intField("ability.maxTargets", this::getMaxTargets, this::setMaxTargets),
+            FieldDef.section("ability.section.aoe"),
+            FieldDef.boolField("gui.enabled", this::isAoe, this::setAoe)
+                .hover("ability.hover.aoe"),
+            FieldDef.intField("ability.activeDisplayTicks", this::getActiveDisplayTicks, this::setActiveDisplayTicks).range(1, 200),
             AbilityFieldDefs.effectsListField("ability.effects", this::getEffects, this::setEffects)
         ));
     }

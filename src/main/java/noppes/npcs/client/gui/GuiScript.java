@@ -2,13 +2,15 @@ package noppes.npcs.client.gui;
 
 import kamkeel.npcs.network.packets.request.script.NPCScriptPacket;
 import net.minecraft.client.gui.GuiButton;
-import net.minecraft.client.gui.GuiConfirmOpenLink;
 import net.minecraft.client.gui.GuiYesNo;
 import net.minecraft.nbt.NBTTagCompound;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.util.StatCollector;
 import noppes.npcs.NoppesStringUtils;
 import noppes.npcs.client.NoppesUtil;
+import noppes.npcs.client.gui.util.SubGuiAPISelect;
+import noppes.npcs.client.gui.util.SubGuiConfirmLink;
+import noppes.npcs.controllers.APIRegistry;
 import noppes.npcs.client.gui.script.GuiScriptInterface;
 import noppes.npcs.client.gui.util.GuiCustomScroll;
 import noppes.npcs.client.gui.util.GuiMenuTopButton;
@@ -16,6 +18,8 @@ import noppes.npcs.client.gui.util.GuiNpcButton;
 import noppes.npcs.client.gui.util.GuiNpcLabel;
 import noppes.npcs.client.gui.util.GuiNpcTextArea;
 import noppes.npcs.client.gui.util.GuiScriptTextArea;
+import noppes.npcs.client.gui.util.script.interpreter.ScriptTextContainer;
+import noppes.npcs.constants.EnumScriptType;
 import noppes.npcs.constants.ScriptContext;
 import noppes.npcs.controllers.ScriptContainer;
 import noppes.npcs.controllers.ScriptController;
@@ -88,17 +92,24 @@ public class GuiScript extends GuiScriptInterface {
         super.initGui();
         this.guiTop += 10;
 
-        // ==================== TOP BUTTONS (hidden in fullscreen) ====================
-        if (!isFullscreen) {
-            GuiMenuTopButton top;
-            addTopButton(top = new GuiMenuTopButton(13, guiLeft + 4, guiTop - 17, "script.scripts"));
-            addTopButton(new GuiMenuTopButton(16, guiLeft + (xSize - 102), guiTop - 17, "eventscript.eventScripts"));
-            addTopButton(new GuiMenuTopButton(17, guiLeft + (xSize - 22), guiTop - 17, "X"));
-            top.active = showScript;
-            addTopButton(top = new GuiMenuTopButton(14, top, "gui.settings"));
-            top.active = !showScript;
-            addTopButton(new GuiMenuTopButton(15, top, "gui.website"));
+        if (isFullscreen) {
+            FullscreenConfig.paddingTop = 30;
         }
+
+        // ==================== TOP BUTTONS ====================
+        boolean isFullscreenView = isFullscreen && showScript;
+        int menuX = isFullscreenView ? FullscreenConfig.paddingLeft : guiLeft + 4;
+        int menuY = isFullscreenView ? FullscreenConfig.paddingTop - 20 : guiTop - 17;
+        int rightX = isFullscreenView ? width - FullscreenConfig.paddingRight : guiLeft + xSize;
+
+        GuiMenuTopButton top;
+        addTopButton(top = new GuiMenuTopButton(13, menuX, menuY, "script.scripts"));
+        addTopButton(new GuiMenuTopButton(16, rightX - 102, menuY, "eventscript.eventScripts"));
+        addTopButton(new GuiMenuTopButton(17, rightX - 22, menuY, "X"));
+        top.active = showScript;
+        addTopButton(top = new GuiMenuTopButton(14, top, "gui.settings"));
+        top.active = !showScript;
+        addTopButton(new GuiMenuTopButton(15, top, "gui.api"));
 
         if (showScript) {
             initScriptView();
@@ -158,8 +169,14 @@ public class GuiScript extends GuiScriptInterface {
                 container == null ? "" : container.script);
         }
 
-        activeArea.setLanguage(script.getLanguage());
+        // Use the container's language for syntax highlighting, fall back to handler default
+        String language = (container != null) ? container.getLanguage() : script.getLanguage();
+        activeArea.setLanguage(language);
         activeArea.setScriptContext(getScriptContext());
+        
+        // Set editor globals based on the active NPC hook
+        String hookName = EnumScriptType.values()[activeTab].function;
+        applyEditorGlobals(activeArea, hookName);
 
         // Setup fullscreen key binding
         GuiScriptTextArea.KEYS.FULLSCREEN.setTask(e -> {
@@ -181,6 +198,14 @@ public class GuiScript extends GuiScriptInterface {
             addButton(new GuiNpcButton(101, guiLeft + 366, guiTop + 4, 50, 20, "gui.paste"));
             addButton(new GuiNpcButton(100, guiLeft + 315, guiTop + 25, 50, 20, "gui.copy"));
             addButton(new GuiNpcButton(107, guiLeft + 315, guiTop + 70, 80, 20, "script.loadscript"));
+
+            // Disable all buttons until server data arrives
+            if (!serverDataReceived) {
+                for (int btnId : new int[]{100, 101, 102, 107}) {
+                    GuiNpcButton btn = getButton(btnId);
+                    if (btn != null) btn.enabled = false;
+                }
+            }
 
             GuiCustomScroll scroll = new GuiCustomScroll(this, 0).setUnselectable();
             scroll.setSize(100, 120);
@@ -211,11 +236,10 @@ public class GuiScript extends GuiScriptInterface {
         addButton(new GuiNpcButton(105, guiLeft + 60, guiTop + 4, 80, 20,
             consoleOptions.toArray(new String[0]), activeConsole));
 
-        addLabel(new GuiNpcLabel(1, "script.language", guiLeft + 232, guiTop + 30));
+        addLabel(new GuiNpcLabel(1, "script.default", guiLeft + 232, guiTop + 30));
         List<String> languageOptions = getLanguageOptions();
         addButton(new GuiNpcButton(103, guiLeft + 294, guiTop + 25, 80, 20,
             languageOptions.toArray(new String[0]), getLanguageIndex(languageOptions)));
-        getButton(103).enabled = languageOptions.size() > 0;
 
         addLabel(new GuiNpcLabel(2, "gui.enabled", guiLeft + 232, guiTop + 53));
         addButton(new GuiNpcButton(104, guiLeft + 294, guiTop + 48, 50, 20,
@@ -223,6 +247,29 @@ public class GuiScript extends GuiScriptInterface {
 
         if (MinecraftServer.getServer() != null)
             addButton(new GuiNpcButton(106, guiLeft + 232, guiTop + 71, 150, 20, "script.openfolder"));
+
+        // Disable all buttons until server data arrives
+        if (!serverDataReceived) {
+            for (int btnId : new int[]{100, 102, 103, 104, 105, 106}) {
+                GuiNpcButton btn = getButton(btnId);
+                if (btn != null) btn.enabled = false;
+            }
+        } else {
+            getButton(103).enabled = languageOptions.size() > 0;
+        }
+    }
+
+    // Apply editor globals for the active NPC hook.
+    private void applyEditorGlobals(GuiScriptTextArea activeArea, String hookName) {
+        if (activeArea == null) 
+            return;
+        
+        ScriptTextContainer textContainer = activeArea.getContainer();
+        if (textContainer == null) 
+            return;
+        
+        if (script != null) 
+            textContainer.setEditorGlobalsMap(script.getEditorGlobals(hookName));
     }
 
     @Override
@@ -240,9 +287,6 @@ public class GuiScript extends GuiScriptInterface {
         NoppesUtil.openGUI(player, this);
         if (!result)
             return;
-        if (id == 0) {
-            openLink("https://kamkeel.github.io/CustomNPC-Plus/");
-        }
         if (id == 101) {
             getTextField(2).setText(NoppesStringUtils.getClipboardContents());
         }
@@ -274,7 +318,12 @@ public class GuiScript extends GuiScriptInterface {
             initGui();
         }
         if (guibutton.id == 15) {
-            displayGuiScreen(new GuiConfirmOpenLink(this, "https://kamkeel.github.io/CustomNPC-Plus/", 0, true));
+            if (APIRegistry.Instance.size() == 1) {
+                String url = APIRegistry.Instance.getEntries().values().iterator().next();
+                setSubGui(new SubGuiConfirmLink(url));
+            } else {
+                setSubGui(new SubGuiAPISelect());
+            }
         }
         if (guibutton.id == 16) {
             close();
@@ -309,9 +358,13 @@ public class GuiScript extends GuiScriptInterface {
         }
         if (guibutton.id == 107) {
             ScriptContainer container = getCurrentContainer();
-            if (container == null)
-                script.setNPCScript(activeTab, container = new ScriptContainer(this.script));
-            setSubGui(new GuiScriptList(languages.get(script.scriptLanguage), container));
+            if (container == null) {
+                container = new ScriptContainer(this.script);
+                container.setLanguage(script.getLanguage());
+                script.setNPCScript(activeTab, container);
+            }
+            String lang = container.getLanguage();
+            setSubGui(new GuiScriptList(languages.get(lang), container));
         }
     }
 
@@ -319,8 +372,11 @@ public class GuiScript extends GuiScriptInterface {
     protected void setScript() {
         if (showScript) {
             ScriptContainer container = getCurrentContainer();
-            if (container == null)
-                script.setNPCScript(activeTab, container = new ScriptContainer(this.script));
+            if (container == null) {
+                container = new ScriptContainer(this.script);
+                container.setLanguage(script.getLanguage());
+                script.setNPCScript(activeTab, container);
+            }
             String text = getTextField(2).getText();
             text = text.replace("\r\n", "\n");
             text = text.replace("\r", "\n");
@@ -330,6 +386,11 @@ public class GuiScript extends GuiScriptInterface {
 
     @Override
     public void setGuiData(NBTTagCompound compound) {
+        // Only process the actual NPCScriptPacket response (has ScriptLanguage + Languages)
+        // Ignore unrelated packets (e.g. script config with ScriptsEnabled/GlobalNPCScriptsEnabled)
+        if (!compound.hasKey("ScriptLanguage") && !compound.hasKey("Languages")) {
+            return;
+        }
         script.readFromNBT(compound);
         loadLanguagesData(compound);
         loaded = true;
@@ -337,7 +398,7 @@ public class GuiScript extends GuiScriptInterface {
 
     @Override
     public void save() {
-        if (loaded) {
+        if (loaded && serverDataReceived) {
             setScript();
             NPCScriptPacket.Save(script.writeToNBT(new NBTTagCompound()));
         }
@@ -351,24 +412,4 @@ public class GuiScript extends GuiScriptInterface {
             initGui();
         }
     }
-
-    @Override
-    public void drawScreen(int mouseX, int mouseY, float partialTicks) {
-        super.drawScreen(mouseX, mouseY, partialTicks);
-
-        // Draw fullscreen button when in script view (GuiScript uses 0-based activeTab)
-        if (showScript) {
-            fullscreenButton.draw(mouseX, mouseY);
-        }
-    }
-
-    @Override
-    public void mouseClicked(int mouseX, int mouseY, int mouseButton) {
-        // Check fullscreen button first when in script view
-        if (showScript && fullscreenButton.mouseClicked(mouseX, mouseY, mouseButton)) {
-            return;
-        }
-        super.mouseClicked(mouseX, mouseY, mouseButton);
-    }
 }
-

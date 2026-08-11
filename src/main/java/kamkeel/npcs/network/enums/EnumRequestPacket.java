@@ -93,6 +93,7 @@ public enum EnumRequestPacket {
     AnimationGet,
     AnimationRemove,
     AnimationSave,
+    AnimationClone,
     BuiltInAnimationGet,
 
     RemoteNpcsGet,
@@ -205,7 +206,28 @@ public enum EnumRequestPacket {
     CustomAbilityGet,
     CustomAbilityRemove,
     CustomAbilitySave,
+    BuiltInAbilityGet,
+    ChainedAbilitiesGet,
+    ChainedAbilityGet,
+    ChainedAbilitySave,
+    ChainedAbilityRemove,
     Hammer,
 
     RecipeScript,
+    ManageAuctionAction,
+    AbilityScript,
+    ChainedAbilityScript,
+
+    CategorySave,
+    CategoryRemove,
+    CategoryMoveItem,
+    CategoryListRequest,
+    CategoryItemsRequest,
+    AbilityCategoryMoveItem,
+
+    CustomAbilityClone,
+    ChainedAbilityClone,
+    CopyAbilityScripts,
+    LinkedItemClone,
+    EffectClone,
 }

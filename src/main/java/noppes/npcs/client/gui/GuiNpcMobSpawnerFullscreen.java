@@ -74,10 +74,10 @@ public class GuiNpcMobSpawnerFullscreen extends GuiDirectory implements IGuiData
         this.posZ = posZ;
 
         // Configure GuiDirectory layout percentages
-        leftPanelPercent  = 0.15f;
+        leftPanelPercent = 0.15f;
         rightPanelPercent = 0.08f;
-        minLeftPanelW     = 120;
-        minRightPanelW    = 62;
+        minLeftPanelW = 120;
+        minRightPanelW = 62;
 
         PacketClient.sendClient(new CloneAllTagsPacket());
         if (GuiNpcMobSpawner.showingClones == 2) {
@@ -199,7 +199,7 @@ public class GuiNpcMobSpawnerFullscreen extends GuiDirectory implements IGuiData
         navScroll.setSelected(getNavSelection());
         navScroll.scrollY = Math.min(savedNavScroll, Math.max(0, navScroll.maxScrollY));
 
-        // Phase 2: color nav items orange (selectable) or red (current location, not selectable)
+        // Phase 2: color nav items orange (selectable) or red (current location)
         if (movePhase == 2) {
             String currentNav = getNavSelection();
             for (String name : navNames) {

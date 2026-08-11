@@ -44,3 +44,7 @@ run
 src/main/resources/assets/customnpcs/api
 df/
 tmp/
+src/test
+node_modules
+.github/pages-dist
+

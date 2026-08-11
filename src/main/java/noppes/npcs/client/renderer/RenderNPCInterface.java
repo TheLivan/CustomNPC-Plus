@@ -482,7 +482,7 @@ public class RenderNPCInterface extends RenderLiving {
                         Minecraft.getMinecraft().entityRenderer.disableLightmap((double) 0);
                     }
 
-                    GL11.glColor4f(1.0F, 1.0F, 1.0F, overlayData.getAlpha());
+                    glColor(overlayData.getColor(), overlayData.getAlpha());
 
                     GL11.glDepthMask(!npc.isInvisible());
 
@@ -521,6 +521,14 @@ public class RenderNPCInterface extends RenderLiving {
         }
     }
 
+    private static void glColor(int color, float alpha) {
+        float r = ((color >> 16) & 0xFF) / 255.0F;
+        float g = ((color >> 8)  & 0xFF) / 255.0F;
+        float b = (color & 0xFF) / 255.0F;
+
+        GL11.glColor4f(r, g, b, alpha);
+    }
+
     @Override
     protected float handleRotationFloat(EntityLivingBase par1EntityLiving, float par2) {
         EntityNPCInterface npc = (EntityNPCInterface) par1EntityLiving;
@@ -536,72 +544,106 @@ public class RenderNPCInterface extends RenderLiving {
 
     @Override
     public ResourceLocation getEntityTexture(Entity entity) {
-
         EntityNPCInterface npc = (EntityNPCInterface) entity;
-        if (npc.textureLocation == null) {
-            if (npc.display.skinType == 0) {
+    
+        // Early exit if texture already resolved
+        if (npc.textureLocation != null) {
+            return npc.textureLocation;
+        }
+    
+        // SkinType 0: custom texture or default
+        if (npc.display.skinType == 0) {
+            if (npc.display.texture.isEmpty()) {
+                return npc.textureLocation = fallBackSkin(npc);
+            }
+    
+            try {
                 if (npc instanceof EntityCustomNpc && ((EntityCustomNpc) npc).modelData.entityClass == null) {
-                    if (!(npc.display.texture).isEmpty()) {
-                        try {
-                            npc.textureLocation = adjustLocalTexture(npc, new ResourceLocation(npc.display.texture));
-                        } catch (IOException ignored) {
-                        }
-                    }
+                    npc.textureLocation = adjustLocalTexture(npc, new ResourceLocation(npc.display.texture));
                 } else {
-                    npc.textureLocation = new ResourceLocation(npc.display.texture);
+                    ResourceLocation resLoc = new ResourceLocation(npc.display.texture);
+                    Minecraft.getMinecraft().getResourceManager().getResource(resLoc);
+                    npc.textureLocation = resLoc;
                 }
-            } else if (npc.display.skinType == 1 && npc.display.playerProfile != null) {
-                Minecraft minecraft = Minecraft.getMinecraft();
-                Map map = minecraft.func_152342_ad().func_152788_a(npc.display.playerProfile);
-                if (map.containsKey(Type.SKIN)) {
-                    npc.textureLocation = minecraft.func_152342_ad().func_152792_a((MinecraftProfileTexture) map.get(Type.SKIN), Type.SKIN);
-                }
-                LastTextureTick = 0;
-            } else if (npc.display.skinType == 2 || npc.display.skinType == 3) {
-                ResourceLocation location = new ResourceLocation("skins/" + (npc.display.skinType + npc.display.url).hashCode());
-                // If URL Empty Steve
-                if (npc.display.url.isEmpty()) {
-                    return fallBackSkin(npc);
-                }
-                // If URL Cached then grab it
-                else if (ClientCacheHandler.isCachedNPC(location)) {
-                    try {
-                        ResourceLocation loc = ClientCacheHandler.getNPCTexture(npc.display.url, npc.display.skinType == 3, location).getLocation();
-                        if (loc != null) {
-                            npc.textureLocation = loc;
-                        } else {
-                            return fallBackSkin(npc);
-                        }
-                    } catch (Exception ignored) {
-                    }
-                }
-                // For New URL Requests do not spam it
-                else if (LastTextureTick < 5) { //fixes request flood somewhat
-                    return fallBackSkin(npc);
-                } else {
-                    try {
-                        ResourceLocation loc = ClientCacheHandler.getNPCTexture(npc.display.url, npc.display.skinType == 3, location).getLocation();
-                        if (loc != null) {
-                            npc.textureLocation = loc;
-                        } else {
-                            return fallBackSkin(npc);
-                        }
-                        LastTextureTick = 0;
-                    } catch (Exception ignored) {
-                    }
-                }
-            } else {
+            } catch (IOException ignored) {
                 return fallBackSkin(npc);
             }
         }
-        return npc.textureLocation;
+    
+        // SkinType 1: player profile skin
+        else if (npc.display.skinType == 1 && npc.display.playerProfile != null) {
+            final Minecraft minecraft = Minecraft.getMinecraft();
+            Map map = minecraft.func_152342_ad().func_152788_a(npc.display.playerProfile);
+            if (map.containsKey(Type.SKIN)) {
+                npc.textureLocation = minecraft.func_152342_ad()
+                        .func_152792_a((MinecraftProfileTexture) map.get(Type.SKIN), Type.SKIN);
+            }
+            LastTextureTick = 0;
+        }
+    
+        // SkinType 2 / 3: load from URL
+        else if (npc.display.skinType == 2 || npc.display.skinType == 3) {
+            if (npc.display.url.isEmpty()) { // If URL is empty → fallback
+                return fallBackSkin(npc);
+            }
+    
+            ResourceLocation location = new ResourceLocation("skins/" + (npc.display.skinType + npc.display.url).hashCode());
+    
+            try {
+                if (ClientCacheHandler.isCachedNPC(location)) { // If URL is cached
+                    ResourceLocation loc = ClientCacheHandler
+                            .getNPCTexture(npc.display.url, npc.display.skinType == 3, location)
+                            .getLocation();
+                    if (loc == null) return fallBackSkin(npc);
+                    npc.textureLocation = loc;
+                } else if (LastTextureTick >= 5) { // Prevent request flooding
+                    ResourceLocation loc = ClientCacheHandler
+                            .getNPCTexture(npc.display.url, npc.display.skinType == 3, location)
+                            .getLocation();
+                    if (loc == null) return fallBackSkin(npc);
+                    npc.textureLocation = loc;
+                    LastTextureTick = 0;
+                } else {
+                    return fallBackSkin(npc);
+                }
+            } catch (Exception ignored) {
+                return fallBackSkin(npc);
+            }
+        }
+    
+        // Fallback: if no valid skin type matched
+        else {
+            return fallBackSkin(npc);
+        }
+    
+        // Final safety net
+        return npc.textureLocation == null ? fallBackSkin(npc) : npc.textureLocation;
     }
 
     private ResourceLocation adjustLocalTexture(EntityNPCInterface npc, ResourceLocation location) throws IOException {
         InputStream inputstream = null;
         try {
             TextureManager texturemanager = Minecraft.getMinecraft().getTextureManager();
-            texturemanager.deleteTexture(location);
+
+            // Compute the hash-based skin location first
+            ResourceLocation skinLocation = location;
+            try {
+                MessageDigest digest = MessageDigest.getInstance("MD5");
+                byte[] hash = digest.digest(npc.display.texture.getBytes("UTF-8"));
+                StringBuilder sb = new StringBuilder(2 * hash.length);
+                for (byte b : hash) {
+                    sb.append(String.format("%02x", b & 0xff));
+                }
+                if (npc.display.modelType == 0) {
+                    skinLocation = new ResourceLocation("skin/" + sb.toString());
+                } else {
+                    skinLocation = new ResourceLocation("skin64/" + sb.toString());
+                }
+            } catch (Exception ignored) {
+            }
+
+            // Delete old processed skin texture if cached (prevents GL texture leak)
+            texturemanager.deleteTexture(skinLocation);
 
             IResource iresource = Minecraft.getMinecraft().getResourceManager().getResource(location);
             inputstream = iresource.getInputStream();
@@ -617,22 +659,8 @@ public class RenderNPCInterface extends RenderLiving {
             ImageDownloadAlt object = new ImageDownloadAlt(null, npc.display.texture, SkinManager.field_152793_a, new ImageBufferDownloadAlt(true));
             object.setBufferedImage(bufferedimage);
 
-            try {
-                MessageDigest digest = MessageDigest.getInstance("MD5");
-                byte[] hash = digest.digest(npc.display.texture.getBytes("UTF-8"));
-                StringBuilder sb = new StringBuilder(2 * hash.length);
-                for (byte b : hash) {
-                    sb.append(String.format("%02x", b & 0xff));
-                }
-                if (npc.display.modelType == 0) {
-                    location = new ResourceLocation("skin/" + sb.toString());
-                } else {
-                    location = new ResourceLocation("skin64/" + sb.toString());
-                }
-            } catch (Exception ignored) {
-            }
-            texturemanager.loadTexture(location, object);
-            return location;
+            texturemanager.loadTexture(skinLocation, object);
+            return skinLocation;
         } finally {
             if (inputstream != null) {
                 inputstream.close();

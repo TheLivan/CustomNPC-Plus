@@ -2,6 +2,7 @@ package noppes.npcs.controllers.data;
 
 import net.minecraft.item.ItemStack;
 import net.minecraft.nbt.NBTTagCompound;
+import noppes.npcs.NoppesUtilServer;
 import noppes.npcs.api.handler.data.IAuctionClaim;
 import noppes.npcs.api.item.IItemStack;
 import noppes.npcs.config.ConfigMarket;
@@ -33,7 +34,9 @@ public class AuctionClaim implements IAuctionClaim {
         this.otherPlayerName = "";
     }
 
-    /** Create claim for winning an item (buyer won auction or buyout) */
+    /**
+     * Create claim for winning an item (buyer won auction or buyout)
+     */
     public static AuctionClaim createItemWonClaim(UUID playerUUID, String playerName, String listingId, ItemStack item) {
         AuctionClaim claim = new AuctionClaim();
         claim.playerUUID = playerUUID;
@@ -46,7 +49,9 @@ public class AuctionClaim implements IAuctionClaim {
         return claim;
     }
 
-    /** Create claim for returned item (seller's expired/cancelled listing) */
+    /**
+     * Create claim for returned item (seller's expired/cancelled listing)
+     */
     public static AuctionClaim createItemReturnedClaim(UUID playerUUID, String playerName, String listingId, ItemStack item) {
         AuctionClaim claim = new AuctionClaim();
         claim.playerUUID = playerUUID;
@@ -59,7 +64,9 @@ public class AuctionClaim implements IAuctionClaim {
         return claim;
     }
 
-    /** Create claim for seller's proceeds (stores item name for tooltip, not full item) */
+    /**
+     * Create claim for seller's proceeds (stores item name for tooltip, not full item)
+     */
     public static AuctionClaim createCurrencyClaim(UUID playerUUID, String playerName, String listingId, long currency, String itemName, String buyerName) {
         AuctionClaim claim = new AuctionClaim();
         claim.playerUUID = playerUUID;
@@ -74,7 +81,9 @@ public class AuctionClaim implements IAuctionClaim {
         return claim;
     }
 
-    /** Create claim for outbid refund (stores item for display and rebid option) */
+    /**
+     * Create claim for outbid refund (stores item for display and rebid option)
+     */
     public static AuctionClaim createRefundClaim(UUID playerUUID, String playerName, String listingId, long currency, String itemName, String outbidderName, ItemStack item) {
         AuctionClaim claim = new AuctionClaim();
         claim.playerUUID = playerUUID;
@@ -140,7 +149,7 @@ public class AuctionClaim implements IAuctionClaim {
 
     @Override
     public boolean isCurrencyClaim() {
-        return type == EnumClaimType.CURRENCY;
+        return type.isCurrency();
     }
 
     @Override
@@ -201,9 +210,7 @@ public class AuctionClaim implements IAuctionClaim {
         compound.setInteger("Type", type.ordinal());
 
         if (item != null) {
-            NBTTagCompound itemTag = new NBTTagCompound();
-            item.writeToNBT(itemTag);
-            compound.setTag("Item", itemTag);
+            compound.setTag("Item", NoppesUtilServer.writeItem(item, new NBTTagCompound()));
         }
 
         compound.setString("ItemName", itemName != null ? itemName : "");
@@ -227,7 +234,7 @@ public class AuctionClaim implements IAuctionClaim {
         type = EnumClaimType.fromOrdinal(compound.getInteger("Type"));
 
         if (compound.hasKey("Item")) {
-            item = ItemStack.loadItemStackFromNBT(compound.getCompoundTag("Item"));
+            item = NoppesUtilServer.readItem(compound.getCompoundTag("Item"));
         } else {
             item = null;
         }

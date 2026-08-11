@@ -63,7 +63,29 @@ public enum EnumDataPacket {
     TELEGRAPH_SPAWN,
     TELEGRAPH_REMOVE,
     PLAYER_ABILITY_SYNC,
+    PLAYER_ABILITY_STATE,
+    ABILITY_HOTBAR_SYNC,
+    ABILITY_COOLDOWN_SYNC,
+
+    // Profile System
+    PROFILE_SHARED_QUEST,
 
     // Auction System
     AUCTION_DATA,
+
+    // Energy Charge Preview
+    ENERGY_CHARGE_SPAWN,
+    ENERGY_CHARGE_REMOVE,
+
+    // Energy Explosion Preview
+    ENERGY_EXPLOSION_SPAWN,
+
+    // Energy Projectile Reflection Sync
+    PROJECTILE_REFLECT,
+
+    // Energy Projectile Client Sync (position, motion, visual, and movement properties)
+    PROJECTILE_CLIENT_SYNC,
+
+    // Energy Barrier Client Sync (visual properties and barrier-specific data)
+    BARRIER_CLIENT_SYNC,
 }

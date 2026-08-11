@@ -15,5 +15,8 @@ public enum FieldType {
     SECTION_HEADER,
     LABEL,
     EFFECTS_LIST,
-    ROW
+    CUSTOM_EFFECTS_LIST,
+    EFFECT_ACTIONS_LIST,
+    ROW,
+    STRING_BROWSE
 }

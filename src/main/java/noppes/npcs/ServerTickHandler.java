@@ -6,9 +6,11 @@ import cpw.mods.fml.common.gameevent.TickEvent;
 import cpw.mods.fml.common.gameevent.TickEvent.Phase;
 import kamkeel.npcs.controllers.ProfileController;
 import kamkeel.npcs.controllers.SyncController;
-import noppes.npcs.controllers.AuctionController;
+import kamkeel.npcs.controllers.sync.handlers.PlayerAbilitySyncHelper;
+import kamkeel.npcs.controllers.sync.handlers.PlayerEffectSyncHelper;
 import net.minecraft.entity.player.EntityPlayerMP;
 import net.minecraft.world.WorldServer;
+import noppes.npcs.controllers.AuctionController;
 import noppes.npcs.controllers.ScriptController;
 import noppes.npcs.controllers.data.PlayerData;
 import noppes.npcs.controllers.data.action.ActionManager;
@@ -45,10 +47,12 @@ public class ServerTickHandler {
             playerData.onLogin();
         }
 
-        ProfileController.Instance.login(player);
         SyncController.beginLogin(player);
-        SyncController.syncEffects(player);
+        PlayerEffectSyncHelper.syncEffects(player);
         ScriptController.Instance.syncClientScripts(player);
+
+        // Sync clean ability state to the new client (after beginLogin initializes sync state)
+        PlayerAbilitySyncHelper.syncAbilities(player);
 
         // Send auction notifications on login
         if (AuctionController.Instance != null) {

@@ -3,20 +3,17 @@ package kamkeel.npcs.controllers.data.ability.type;
 import cpw.mods.fml.relauncher.Side;
 import cpw.mods.fml.relauncher.SideOnly;
 import kamkeel.npcs.controllers.data.ability.Ability;
-import kamkeel.npcs.controllers.data.ability.LockMovementType;
-import kamkeel.npcs.controllers.data.ability.TargetingMode;
+import kamkeel.npcs.controllers.data.ability.enums.LockMode;
+import kamkeel.npcs.controllers.data.ability.enums.TargetingMode;
+import kamkeel.npcs.controllers.data.ability.gui.AbilityFieldDefs;
 import kamkeel.npcs.controllers.data.telegraph.TelegraphType;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityLivingBase;
 import net.minecraft.nbt.NBTTagCompound;
 import net.minecraft.util.Vec3;
 import net.minecraft.world.World;
-import noppes.npcs.entity.EntityNPCInterface;
-
 import noppes.npcs.api.ability.type.IAbilityProjectile;
-
 import noppes.npcs.client.gui.builder.FieldDef;
-import kamkeel.npcs.controllers.data.ability.gui.AbilityFieldDefs;
 
 import java.util.Arrays;
 import java.util.List;
@@ -45,7 +42,7 @@ public class AbilityProjectile extends Ability implements IAbilityProjectile {
         this.maxRange = 20.0f;
         this.cooldownTicks = 0;
         this.windUpTicks = 15;
-        this.lockMovement = LockMovementType.NO;
+        this.lockMovement = LockMode.NO;
         // No telegraph for projectile - it's a ranged attack
         this.telegraphType = TelegraphType.NONE;
         this.showTelegraph = false;
@@ -67,18 +64,18 @@ public class AbilityProjectile extends Ability implements IAbilityProjectile {
     }
 
     @Override
-    public void onExecute(EntityLivingBase caster, EntityLivingBase target, World world) {
-        if (world.isRemote && !isPreview()) {
+    public void onExecute(EntityLivingBase caster, EntityLivingBase target) {
+        if (caster.worldObj.isRemote && !isPreview()) {
             signalCompletion();
             return;
         }
 
         if (isPlayerCaster(caster)) {
             // Player: instant hit-scan in look direction
-            executePlayerProjectile(caster, world);
+            executePlayerProjectile(caster, caster.worldObj);
         } else if (target != null) {
             // NPC: instant hit-scan on aggro target
-            executeNpcProjectile(caster, target, world);
+            executeNpcProjectile(caster, target, caster.worldObj);
         }
 
         signalCompletion();
@@ -94,7 +91,20 @@ public class AbilityProjectile extends Ability implements IAbilityProjectile {
         double dy = (target.posY + target.height / 2) - (caster.posY + caster.getEyeHeight());
         double dz = target.posZ - caster.posZ;
         double len = Math.sqrt(dx * dx + dy * dy + dz * dz);
-        if (len > 0) { dx /= len; dy /= len; dz /= len; }
+        if (len > 0) {
+            dx /= len;
+            dy /= len;
+            dz /= len;
+        }
+
+        // A rotation-locked NPC cannot turn to follow the target, so it can only hit what its
+        // frozen heading still covers - the same cone the player hit scan uses.
+        if (isRotationLockedForCurrentPhase()) {
+            Vec3 look = caster.getLookVec();
+            if (look != null && (dx * look.xCoord + dy * look.yCoord + dz * look.zCoord) < 0.95) {
+                return;
+            }
+        }
 
         applyAbilityDamageWithDirection(caster, target, damage, knockback, dx, dz);
         world.playSoundAtEntity(caster, "random.bow", 1.0f, 0.8f);
@@ -167,7 +177,7 @@ public class AbilityProjectile extends Ability implements IAbilityProjectile {
      * Apply explosion splash damage around a point.
      */
     private void applyExplosionDamage(EntityLivingBase caster, EntityLivingBase primaryTarget, World world,
-                                       double x, double y, double z) {
+                                      double x, double y, double z) {
         @SuppressWarnings("unchecked")
         List<Entity> entities = world.getEntitiesWithinAABBExcludingEntity(primaryTarget,
             primaryTarget.boundingBox.expand(explosionRadius, explosionRadius, explosionRadius));
@@ -250,7 +260,7 @@ public class AbilityProjectile extends Ability implements IAbilityProjectile {
     }
 
     @Override
-    public void onActiveTick(EntityLivingBase caster, EntityLivingBase target, World world, int tick) {
+    public void onActiveTick(EntityLivingBase caster, EntityLivingBase target, int tick) {
         // Projectile is instant, nothing to do per-tick
     }
 
@@ -273,14 +283,14 @@ public class AbilityProjectile extends Ability implements IAbilityProjectile {
 
     @Override
     public void readTypeNBT(NBTTagCompound nbt) {
-        this.damage = nbt.hasKey("damage") ? nbt.getFloat("damage") : 6.0f;
-        this.speed = nbt.hasKey("speed") ? nbt.getFloat("speed") : 1.5f;
-        this.knockback = nbt.hasKey("knockback") ? nbt.getFloat("knockback") : 0.5f;
-        this.projectileType = nbt.hasKey("projectileType") ? nbt.getString("projectileType") : "fireball";
-        this.explosive = nbt.hasKey("explosive") && nbt.getBoolean("explosive");
-        this.explosionRadius = nbt.hasKey("explosionRadius") ? nbt.getFloat("explosionRadius") : 0.0f;
-        this.homing = nbt.hasKey("homing") && nbt.getBoolean("homing");
-        this.homingStrength = nbt.hasKey("homingStrength") ? nbt.getFloat("homingStrength") : 0.1f;
+        this.damage = nbt.getFloat("damage");
+        this.speed = nbt.getFloat("speed");
+        this.knockback = nbt.getFloat("knockback");
+        this.projectileType = nbt.getString("projectileType");
+        this.explosive = nbt.getBoolean("explosive");
+        this.explosionRadius = nbt.getFloat("explosionRadius");
+        this.homing = nbt.getBoolean("homing");
+        this.homingStrength = nbt.getFloat("homingStrength");
     }
 
     // Getters & Setters
@@ -291,6 +301,9 @@ public class AbilityProjectile extends Ability implements IAbilityProjectile {
     public void setDamage(float damage) {
         this.damage = damage;
     }
+
+    @Override
+    public float getDisplayDamage() { return damage; }
 
     public float getSpeed() {
         return speed;

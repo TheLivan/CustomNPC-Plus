@@ -1,6 +1,8 @@
 package kamkeel.npcs.controllers.data.ability.data;
 
-import kamkeel.npcs.controllers.data.ability.AnchorPoint;
+import kamkeel.npcs.controllers.data.ability.enums.AnchorPoint;
+import kamkeel.npcs.controllers.data.ability.data.energy.EnergyAnchorData;
+import kamkeel.npcs.controllers.data.ability.data.energy.EnergyDisplayData;
 import net.minecraft.nbt.NBTTagCompound;
 
 /**
@@ -24,10 +26,12 @@ public class ProjectileData {
      * If colorOverride is true, returns a copy with overridden inner/outer colors.
      */
     public EnergyDisplayData resolveDisplay(EnergyDisplayData primary) {
-        if (!colorOverride) return primary;
+        // Always return a copy so entity mutations never bleed back into the ability template.
         EnergyDisplayData resolved = primary.copy();
-        resolved.innerColor = this.innerColor;
-        resolved.outerColor = this.outerColor;
+        if (colorOverride) {
+            resolved.innerColor = this.innerColor;
+            resolved.outerColor = this.outerColor;
+        }
         return resolved;
     }
 
@@ -44,8 +48,8 @@ public class ProjectileData {
         anchor.readNBT(nbt);
         colorOverride = nbt.getBoolean("colorOverride");
         if (colorOverride) {
-            innerColor = nbt.hasKey("overrideInnerColor") ? nbt.getInteger("overrideInnerColor") : 0xFFFFFF;
-            outerColor = nbt.hasKey("overrideOuterColor") ? nbt.getInteger("overrideOuterColor") : 0x8888FF;
+            innerColor = nbt.getInteger("overrideInnerColor");
+            outerColor = nbt.getInteger("overrideOuterColor");
         }
     }
 

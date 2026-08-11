@@ -39,6 +39,7 @@ public class QuestTrackingComponent extends HudComponent {
         if (turnIn != null && !turnIn.isEmpty()) {
             turnInLines.add(convertColorCodes(turnIn));
         }
+        updateOverlayHeight();
     }
 
     /**
@@ -113,10 +114,10 @@ public class QuestTrackingComponent extends HudComponent {
     @Override
     public void save() {
         ConfigClient.QuestOverlayX = posX;
-        ConfigClient.QuestOverlayXProperty.set(ConfigClient.QuestOverlayX);
+        ConfigClient.QuestOverlayXProperty.set((double) ConfigClient.QuestOverlayX);
 
         ConfigClient.QuestOverlayY = posY;
-        ConfigClient.QuestOverlayYProperty.set(ConfigClient.QuestOverlayY);
+        ConfigClient.QuestOverlayYProperty.set((double) ConfigClient.QuestOverlayY);
 
         ConfigClient.QuestOverlayScale = scale;
         ConfigClient.QuestOverlayScaleProperty.set(ConfigClient.QuestOverlayScale);
@@ -218,8 +219,8 @@ public class QuestTrackingComponent extends HudComponent {
             int compHeight = (int) (overlayHeight * effectiveScale);
             int centerX = (res.getScaledWidth() - compWidth) / 2;
             int centerY = (res.getScaledHeight() - compHeight) / 2;
-            posX = (int) (100F * centerX / res.getScaledWidth());
-            posY = (int) (100F * centerY / res.getScaledHeight());
+            posX = 100F * centerX / res.getScaledWidth();
+            posY = 100F * centerY / res.getScaledHeight();
         } else {
             super.onEditorButtonPressed(button);
         }
@@ -239,6 +240,19 @@ public class QuestTrackingComponent extends HudComponent {
     }
 
     // ---------- Helper rendering methods ----------- (methods unchanged) ...
+    private void updateOverlayHeight() {
+        int lineHeight = mc.fontRenderer.FONT_HEIGHT + 4;
+        int contentHeight = 5;
+        contentHeight += questTitleLines.size() * lineHeight + 8;
+        contentHeight += questCategoryLines.size() * lineHeight + 8;
+        contentHeight += objectiveLines.size() * lineHeight;
+        if (!turnInLines.isEmpty()) {
+            contentHeight += 8;
+        }
+        contentHeight += turnInLines.size() * lineHeight;
+        overlayHeight = contentHeight;
+    }
+
     private int renderTextBlock(List<String> lines, int startY, int align, int color) {
         int y = startY;
         FontRenderer font = mc.fontRenderer;

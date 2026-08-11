@@ -1,10 +1,18 @@
 package noppes.npcs.controllers.data;
 
+import kamkeel.npcs.controllers.AbilityController;
+import kamkeel.npcs.controllers.sync.handlers.PlayerAbilitySyncHelper;
 import kamkeel.npcs.controllers.data.ability.Ability;
-import kamkeel.npcs.controllers.data.ability.AbilityController;
-import kamkeel.npcs.controllers.data.ability.AbilityPhase;
-import kamkeel.npcs.controllers.data.ability.UserType;
+import kamkeel.npcs.controllers.data.ability.enums.AbilityPhase;
+import kamkeel.npcs.controllers.data.ability.data.ChainedAbility;
+import kamkeel.npcs.controllers.data.ability.data.IAbilityAction;
+import kamkeel.npcs.controllers.data.ability.data.entry.AbilityToggleEntry;
 import kamkeel.npcs.controllers.data.telegraph.TelegraphInstance;
+import kamkeel.npcs.network.PacketHandler;
+import kamkeel.npcs.network.packets.data.UpdateAnimationsPacket;
+import kamkeel.npcs.network.packets.data.ability.AbilityCooldownSyncPacket;
+import kamkeel.npcs.network.packets.data.ability.PlayerAbilityStatePacket;
+import kamkeel.npcs.network.packets.data.ability.PlayerAbilitySyncPacket;
 import kamkeel.npcs.network.packets.data.telegraph.TelegraphRemovePacket;
 import kamkeel.npcs.network.packets.data.telegraph.TelegraphSpawnPacket;
 import net.minecraft.entity.EntityLivingBase;
@@ -14,18 +22,20 @@ import net.minecraft.nbt.NBTTagCompound;
 import net.minecraft.nbt.NBTTagList;
 import net.minecraft.nbt.NBTTagString;
 import net.minecraft.util.DamageSource;
+import noppes.npcs.AbstractDataAbilities;
+import noppes.npcs.EventHooks;
+import noppes.npcs.LogWriter;
 import noppes.npcs.api.ability.IPlayerAbilityData;
-import noppes.npcs.controllers.AnimationController;
-import noppes.npcs.controllers.data.Animation;
-
-import kamkeel.npcs.network.packets.data.ability.PlayerAbilitySyncPacket;
 
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Manages player ability data - unlocked abilities, selection, cooldowns, and execution.
  * Players reference abilities by key (built-in keys or preset names), never customized copies.
+ * Extends AbstractDataAbilities for shared ability lifecycle logic.
  * <p>
  * Key differences from NPC DataAbilities:
  * - Universal cooldown (shared across all abilities)
@@ -33,7 +43,7 @@ import java.util.List;
  * - Conditions requiring a target are skipped
  * - Uses ability's base cooldownTicks only
  */
-public class PlayerAbilityData implements IPlayerAbilityData {
+public class PlayerAbilityData extends AbstractDataAbilities implements IPlayerAbilityData {
 
     private final PlayerData playerData;
 
@@ -52,19 +62,16 @@ public class PlayerAbilityData implements IPlayerAbilityData {
      */
     private int selectedIndex = 0;
 
-    // ═══════════════════════════════════════════════════════════════════
-    // RUNTIME STATE (not saved)
-    // ═══════════════════════════════════════════════════════════════════
-
     /**
-     * Universal cooldown end time (shared across all abilities).
+     * Tracks whether the current animation was started by an ability.
+     * Persisted to NBT so orphaned ability animations can be detected and
+     * cleared on login (ability state is transient, but animation state is not).
      */
-    private transient long cooldownEndTime = 0;
+    private boolean playingAbilityAnimation = false;
 
-    /**
-     * Currently executing ability instance (null if none).
-     */
-    private transient Ability currentAbility;
+    // ═══════════════════════════════════════════════════════════════════
+    // PLAYER-SPECIFIC RUNTIME STATE (not saved)
+    // ═══════════════════════════════════════════════════════════════════
 
     /**
      * Current ability's key (for cooldown tracking after completion).
@@ -76,12 +83,205 @@ public class PlayerAbilityData implements IPlayerAbilityData {
      */
     private transient EntityLivingBase currentTarget;
 
+    /**
+     * Last synced state flags byte for change detection (avoids spamming packets).
+     */
+    private transient byte lastSyncedFlags = 0;
+
+    /**
+     * World time when the last ability was activated (for double-press cancel detection).
+     */
+    private transient long lastAbilityActivationTime = -1;
+
+    /**
+     * Ticks after activation during which a second key press will cancel the ability.
+     */
+    private static final int CANCEL_WINDOW_TICKS = 10;
+
+    /**
+     * Position tracking for teleport detection during ability execution.
+     * If the player moves more than {@link #TELEPORT_THRESHOLD_SQ} in a single tick,
+     * the ability is interrupted as if the player changed dimensions.
+     */
+    private transient double lastAbilityTickX, lastAbilityTickY, lastAbilityTickZ;
+    private transient boolean trackingAbilityPosition = false;
+
+    /**
+     * Squared distance threshold for teleport detection (48 blocks).
+     * Normal sprint speed is ~5.6 blocks/tick; this threshold is well above
+     * any legitimate per-tick movement including ability-driven dashes.
+     */
+    private static final double TELEPORT_THRESHOLD_SQ = 48.0 * 48.0;
+
     // ═══════════════════════════════════════════════════════════════════
     // CONSTRUCTOR
     // ═══════════════════════════════════════════════════════════════════
 
     public PlayerAbilityData(PlayerData playerData) {
         this.playerData = playerData;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // ABSTRACT METHOD IMPLEMENTATIONS
+    // ═══════════════════════════════════════════════════════════════════
+
+    @Override
+    protected EntityLivingBase getEntity() {
+        return playerData.player;
+    }
+
+    @Override
+    protected EntityLivingBase getTarget() {
+        return currentTarget;
+    }
+
+    @Override
+    protected long getWorldTime() {
+        EntityPlayer player = playerData.player;
+        return player != null ? player.worldObj.getTotalWorldTime() : 0;
+    }
+
+    @Override
+    protected void spawnTelegraph(Ability ability, EntityLivingBase target) {
+        EntityPlayer player = playerData.player;
+        List<TelegraphInstance> telegraphs = ability.createTelegraphs(player, target);
+        if (!telegraphs.isEmpty()) {
+            ability.setTelegraphInstances(telegraphs);
+            if (player instanceof EntityPlayerMP) {
+                for (TelegraphInstance telegraph : telegraphs) {
+                    TelegraphSpawnPacket.sendToTracking(telegraph, player);
+                }
+            }
+        }
+    }
+
+    @Override
+    protected void removeTelegraph(Ability ability) {
+        EntityPlayer player = playerData.player;
+        List<TelegraphInstance> telegraphs = ability.getTelegraphInstances();
+        for (TelegraphInstance telegraph : telegraphs) {
+            if (player instanceof EntityPlayerMP) {
+                TelegraphRemovePacket.sendToTracking(telegraph.getInstanceId(), player);
+            }
+        }
+        ability.setTelegraphInstances(null);
+    }
+
+    @Override
+    protected void setAnimationData(Animation animation) {
+        playerData.animationData.setEnabled(true);
+        playerData.animationData.setAnimation(animation);
+        playerData.animationData.updateClient();
+        playingAbilityAnimation = true;
+    }
+
+    @Override
+    protected void clearAnimationData() {
+        playerData.animationData.setAnimation(null);
+        playerData.animationData.updateClient();
+
+        // Directly send animation clear to the owning player. updateClient() uses
+        // getEntitiesWithinAABB to find recipients, but during teleport the player
+        // entity hasn't migrated to the new chunk yet — so the AABB search centered
+        // on the new position won't find them, and the clear packet is never delivered.
+        // This guarantees the player's client always receives the clear.
+        EntityPlayer player = playerData.player;
+        if (player instanceof EntityPlayerMP) {
+            NBTTagCompound data = new NBTTagCompound();
+            data.setBoolean("AllowAnimation", playerData.animationData.enabled());
+            PacketHandler.Instance.sendToPlayer(
+                new UpdateAnimationsPacket(data, player.getCommandSenderName()),
+                (EntityPlayerMP) player
+            );
+        }
+
+        playingAbilityAnimation = false;
+    }
+
+    @Override
+    protected void playAbilitySound(String sound) {
+        if (sound != null && !sound.isEmpty()) {
+            EntityPlayer player = playerData.player;
+            if (player != null) {
+                player.worldObj.playSoundAtEntity(player, sound, 1.0f, 1.0f);
+            }
+        }
+    }
+
+    @Override
+    protected void captureLockedRotation() {
+        EntityPlayer player = playerData.player;
+        lockedYaw = player.rotationYaw;
+        lockedPitch = player.rotationPitch;
+        rotationLocked = true;
+    }
+
+    @Override
+    protected void rollCooldown(Ability ability) {
+        if (ability.isIgnoreCooldown()) return;
+
+        int duration = ability.getCooldownTicks();
+        long endTime = getWorldTime() + duration;
+
+        if (ability.isPerAbilityCooldown()) {
+            // Per-ability: only this ability goes on cooldown
+            if (currentAbilityKey != null) {
+                setPerAbilityCooldown(currentAbilityKey, endTime, duration);
+            }
+        } else {
+            // Global: all global-cooldown abilities share this cooldown
+            cooldownEndTime = endTime;
+            globalCooldownDuration = duration;
+        }
+    }
+
+    @Override
+    protected void rollChainCooldown(ChainedAbility chain) {
+        if (chain.isIgnoreCooldown()) return;
+
+        int duration = chain.getCooldownTicks();
+        long endTime = getWorldTime() + duration;
+
+        if (chain.isPerAbilityCooldown()) {
+            if (currentAbilityKey != null) {
+                setPerAbilityCooldown(currentAbilityKey, endTime, duration);
+            }
+        } else {
+            cooldownEndTime = endTime;
+            globalCooldownDuration = duration;
+        }
+    }
+
+    @Override
+    protected void onAbilityComplete() {
+        currentAbility = null;
+        currentAbilityKey = null;
+        currentTarget = null;
+        lastAbilityActivationTime = -1;
+        syncAbilityStateClear(playerData.player);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // HOOK OVERRIDES
+    // ═══════════════════════════════════════════════════════════════════
+
+    @Override
+    protected void onInterruptComplete() {
+        // Player clears state immediately (unlike NPC which ticks through DAZED)
+        // Roll cooldown before clearing state — NPC rolls during handleAbilityCompletion
+        // after ticking through DAZED, but the player skips DAZED entirely.
+        if (!interruptCooldownRolled && currentAbility != null) {
+            rollCooldown(currentAbility);
+        }
+        interruptCooldownRolled = false;
+
+        // Stop the dazed animation that was started in interruptCurrentAbility()
+        stopAbilityAnimation();
+        currentAbility = null;
+        currentAbilityKey = null;
+        currentTarget = null;
+        lastAbilityActivationTime = -1;
+        syncAbilityStateClear(playerData.player);
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -97,83 +297,51 @@ public class PlayerAbilityData implements IPlayerAbilityData {
             return;
         }
 
-        if (currentAbility != null && currentAbility.isExecuting()) {
-            tickCurrentAbility(player);
-        }
-    }
+        // Tick active toggles (independent of currentAbility)
+        tickActiveToggles();
 
-    /**
-     * Tick the currently executing ability.
-     */
-    private void tickCurrentAbility(EntityPlayer player) {
-        AbilityPhase oldPhase = currentAbility.getPhase();
+        boolean hasActiveAbility = chainDelayRemaining > 0 || (currentAbility != null && currentAbility.isExecuting());
 
-        // Tick advances time and possibly changes phase
-        boolean phaseChanged = currentAbility.tick();
-
-        switch (currentAbility.getPhase()) {
-            case WINDUP:
-                currentAbility.onWindUpTick(player, currentTarget, player.worldObj, currentAbility.getCurrentTick());
-                break;
-
-            case ACTIVE:
-                if (phaseChanged && oldPhase == AbilityPhase.WINDUP) {
-                    // Just entered ACTIVE phase
-                    TelegraphInstance telegraph = currentAbility.getTelegraphInstance();
-                    if (telegraph != null) {
-                        telegraph.lockPosition();
-                    }
-                    removeTelegraph(currentAbility, player);
-
-                    // Play active sound and animation
-                    playAbilitySound(player, currentAbility.getActiveSound());
-                    playAbilityAnimation(currentAbility.getActiveAnimation());
-
-                    // Call onExecute
-                    currentAbility.onExecute(player, currentTarget, player.worldObj);
-
-                    if (currentAbility.getPhase() == AbilityPhase.IDLE) {
-                        handleAbilityCompletion(player);
-                        return;
-                    }
-                }
-                currentAbility.onActiveTick(player, currentTarget, player.worldObj, currentAbility.getCurrentTick());
-
-                if (currentAbility.getPhase() == AbilityPhase.IDLE) {
-                    handleAbilityCompletion(player);
+        if (hasActiveAbility) {
+            // Detect large position jump (teleport) while ability is executing.
+            // Must run BEFORE tickCurrentAbility / applyPositionLock so the raw
+            // teleported position is visible before any lock snaps it back.
+            if (trackingAbilityPosition) {
+                double dx = player.posX - lastAbilityTickX;
+                double dy = player.posY - lastAbilityTickY;
+                double dz = player.posZ - lastAbilityTickZ;
+                if (dx * dx + dy * dy + dz * dz > TELEPORT_THRESHOLD_SQ) {
+                    // Player was teleported — clear ability state (same as dimension change)
+                    trackingAbilityPosition = false;
+                    resetOnTeleport();
                     return;
                 }
-                break;
+            }
 
-            case DAZED:
-                // Player is dazed - just wait
-                break;
+            // Update tracked position for next tick's comparison
+            lastAbilityTickX = player.posX;
+            lastAbilityTickY = player.posY;
+            lastAbilityTickZ = player.posZ;
+            trackingAbilityPosition = true;
 
-            case IDLE:
-                handleAbilityCompletion(player);
-                break;
+            tickCurrentAbility();
+
+            // Apply rotation and position locks after ability tick
+            applyRotationControl(player);
+            applyPositionLock(player);
+
+            // Sync lock state to client (only sends when flags change)
+            syncAbilityStateIfNeeded(player);
+        } else {
+            trackingAbilityPosition = false;
+
+            // Safety: release orphaned locks if no ability is executing
+            if (rotationLocked || positionLocked) {
+                releaseRotationControl();
+                releaseLockedPosition();
+                syncAbilityStateClear(player);
+            }
         }
-    }
-
-    /**
-     * Handle ability completion.
-     */
-    private void handleAbilityCompletion(EntityPlayer player) {
-        if (currentAbility == null) return;
-
-        currentAbility.onComplete(player, currentTarget);
-
-        // Apply universal cooldown (using base cooldownTicks only, not min/max random)
-        if (!currentAbility.isIgnoreCooldown()) {
-            cooldownEndTime = player.worldObj.getTotalWorldTime() + currentAbility.getCooldownTicks();
-        }
-
-        // Stop animation
-        stopAbilityAnimation();
-
-        currentAbility = null;
-        currentAbilityKey = null;
-        currentTarget = null;
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -197,67 +365,129 @@ public class PlayerAbilityData implements IPlayerAbilityData {
     }
 
     /**
-     * Activate a specific ability by key.
+     * Prefix used to identify chained ability keys in the unlocked list.
+     */
+    public static final String CHAIN_PREFIX = "chain:";
+
+    /**
+     * Resolve an action key to an IAbilityAction.
+     * Handles "chain:" prefix for chained abilities, otherwise resolves from AbilityController.
+     */
+    private IAbilityAction resolveActionKey(String key) {
+        if (key.startsWith(CHAIN_PREFIX)) {
+            return AbilityController.Instance.resolveChainedAbility(key.substring(CHAIN_PREFIX.length()));
+        }
+        return AbilityController.Instance.resolveAbility(key);
+    }
+
+    /**
+     * Activate a specific ability by key. Keys prefixed with "chain:" are
+     * treated as chained abilities and resolved from {@link AbilityController}.
      *
      * @param player The player
-     * @param key    The ability key (built-in or preset name)
+     * @param key    The ability key (built-in or preset name), or "chain:name" for chains
      * @return true if the ability was started
      */
     public boolean activateAbility(EntityPlayer player, String key) {
         if (player.worldObj.isRemote || key == null || key.isEmpty()) return false;
 
+        // Global activation check (e.g., addon-registered restrictions)
+        if (!AbilityController.Instance.canPlayerActivate(player)) return false;
+
         // Can't activate if already executing
         if (currentAbility != null && currentAbility.isExecuting()) return false;
+        if (isExecutingChain()) return false;
 
-        // Resolve ability from controller
-        if (AbilityController.Instance == null) return false;
-        Ability ability = AbilityController.Instance.resolveAbility(key);
-        if (ability == null) return false;
+        // Resolve via unified resolver
+        IAbilityAction action = resolveActionKey(key);
+        if (action == null) return false;
 
         // Check user type allows player
-        if (!ability.getAllowedBy().allowsPlayer()) return false;
-
-        // Check universal cooldown
-        if (!ability.isIgnoreCooldown() && isOnCooldown(player)) return false;
+        if (!action.getAllowedBy().allowsPlayer()) return false;
 
         // Check conditions (skip target-requiring ones)
-        if (!ability.checkConditionsForPlayer(player)) return false;
+        if (!action.checkConditionsForPlayer(player)) return false;
+
+        // Check player requirement (visibility/availability gate)
+        if (!action.isAvailableFor(player)) return false;
+
+        // Dispatch: chain vs ability
+        if (action.isChain()) {
+            ChainedAbility chain = (ChainedAbility) action;
+            if (!chain.isIgnoreCooldown()) {
+                if (chain.isPerAbilityCooldown()) {
+                    if (isOnPerAbilityCooldown(key)) return false;
+                } else {
+                    if (isOnCooldown()) return false;
+                }
+            }
+
+            currentAbilityKey = key;
+            currentTarget = null;
+            lastAbilityActivationTime = getWorldTime();
+            return startChain((ChainedAbility) action, null);
+        }
+
+        // Regular ability activation
+        Ability ability = (Ability) action;
+
+        // Toggle abilities cycle state instead of executing
+        if (ability.isToggleable()) {
+            toggleAbility(key);
+            return true;
+        }
+
+        // Check cooldown (per-ability cooldowns are independent from global)
+        if (!ability.isIgnoreCooldown()) {
+            if (ability.isPerAbilityCooldown()) {
+                if (isOnPerAbilityCooldown(key)) return false;
+            } else {
+                if (isOnCooldown()) return false;
+            }
+        }
+
+        // Fire extender start hook (e.g., resource cost checks)
+        if (!AbilityController.Instance.fireOnAbilityStart(ability, player, null)) {
+            return false;
+        }
+
+        // Fire start event (cancelable)
+        if (EventHooks.onAbilityStart(ability, player, null)) {
+            return false; // Cancelled
+        }
 
         // Start the ability
         currentAbility = ability;
         currentAbilityKey = key;
         currentTarget = null; // Players don't have auto-targets
+        lastAbilityActivationTime = getWorldTime();
         ability.start(null);
 
         if (ability.getPhase() == AbilityPhase.ACTIVE) {
-            // Windup was 0 — skip telegraph/windup and go straight to active
-            executeImmediate(ability, player);
+            // Windup was 0 — capture locks for immediate active phase, then execute
+            if (ability.isRotationLockedDuringActive()) {
+                captureLockedRotation();
+            }
+            if (ability.isMovementLockedDuringActive() && !ability.hasAbilityMovement()) {
+                captureLockedPosition();
+            }
+            executeImmediate(ability, currentTarget);
         } else {
             // Normal windup flow
-            spawnTelegraph(ability, player, null);
-            playAbilitySound(player, ability.getWindUpSound());
+            if (ability.isRotationLockedDuringWindup()) {
+                captureLockedRotation();
+            }
+            if (ability.isMovementLockedDuringWindup() && !ability.hasAbilityMovement()) {
+                captureLockedPosition();
+            }
+            spawnTelegraph(ability, null);
+            playAbilitySound(ability.getWindUpSound());
             playAbilityAnimation(ability.getWindUpAnimation());
         }
 
+        // Immediate sync on ability use
+        syncToClient();
         return true;
-    }
-
-    /**
-     * Execute an ability immediately (no windup).
-     * Called when windUpTicks is 0.
-     */
-    private void executeImmediate(Ability ability, EntityPlayer player) {
-        // Play active sound and animation
-        playAbilitySound(player, ability.getActiveSound());
-        playAbilityAnimation(ability.getActiveAnimation());
-
-        // Call onExecute
-        ability.onExecute(player, currentTarget, player.worldObj);
-
-        // Check if ability completed during onExecute
-        if (ability.getPhase() == AbilityPhase.IDLE) {
-            handleAbilityCompletion(player);
-        }
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -265,14 +495,29 @@ public class PlayerAbilityData implements IPlayerAbilityData {
     // ═══════════════════════════════════════════════════════════════════
 
     /**
-     * Sync ability data to the client.
-     * Called when abilities change (unlock/lock/select) and on login.
+     * Full sync of all ability state to the client.
+     * Delegates to {@link PlayerAbilitySyncHelper#syncAbilities(EntityPlayerMP)}.
      */
     public void syncToClient() {
         EntityPlayer player = playerData.player;
         if (player instanceof EntityPlayerMP) {
-            PlayerAbilitySyncPacket.sendToPlayer((EntityPlayerMP) player);
+            PlayerAbilitySyncHelper.syncAbilities((EntityPlayerMP) player);
         }
+    }
+
+    /**
+     * Lightweight sync of cooldown state only to the client.
+     * Delegates to {@link PlayerAbilitySyncHelper#syncAbilityCooldowns(EntityPlayerMP)}.
+     */
+    public void syncCooldownToClient() {
+        EntityPlayer player = playerData.player;
+        if (player instanceof EntityPlayerMP) {
+            PlayerAbilitySyncHelper.syncAbilityCooldowns((EntityPlayerMP) player);
+        }
+    }
+
+    @Override
+    protected void onToggleStateChanged(String key, boolean active, int state) {
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -284,22 +529,19 @@ public class PlayerAbilityData implements IPlayerAbilityData {
     }
 
     public void setSelectedIndex(int index) {
-        if (index >= 0 && index < unlockedAbilities.size()) {
+        if (index == -1 || (index >= 0 && index < unlockedAbilities.size())) {
             this.selectedIndex = index;
-            syncToClient();
         }
     }
 
     public void selectNext() {
         if (unlockedAbilities.isEmpty()) return;
         selectedIndex = (selectedIndex + 1) % unlockedAbilities.size();
-        syncToClient();
     }
 
     public void selectPrevious() {
         if (unlockedAbilities.isEmpty()) return;
         selectedIndex = (selectedIndex - 1 + unlockedAbilities.size()) % unlockedAbilities.size();
-        syncToClient();
     }
 
     public String getSelectedAbilityKey() {
@@ -328,13 +570,11 @@ public class PlayerAbilityData implements IPlayerAbilityData {
         if (selectedIndex >= unlockedAbilities.size()) {
             selectedIndex = Math.max(0, unlockedAbilities.size() - 1);
         }
-        syncToClient();
     }
 
     public void unlockAbility(String key) {
         if (key != null && !key.isEmpty() && !unlockedAbilities.contains(key)) {
             unlockedAbilities.add(key);
-            syncToClient();
         }
     }
 
@@ -343,7 +583,6 @@ public class PlayerAbilityData implements IPlayerAbilityData {
         if (selectedIndex >= unlockedAbilities.size()) {
             selectedIndex = Math.max(0, unlockedAbilities.size() - 1);
         }
-        syncToClient();
     }
 
     public boolean hasUnlockedAbility(String key) {
@@ -351,18 +590,27 @@ public class PlayerAbilityData implements IPlayerAbilityData {
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // COOLDOWNS
+    // COOLDOWNS (Player-specific overloads)
     // ═══════════════════════════════════════════════════════════════════
 
+    /**
+     * Check if on cooldown using player reference.
+     */
     public boolean isOnCooldown(EntityPlayer player) {
         return player.worldObj.getTotalWorldTime() < cooldownEndTime;
     }
 
     /**
      * Check if a specific ability key is on cooldown.
-     * Currently uses universal cooldown (same for all abilities).
+     * Respects per-ability cooldown if the ability has it enabled.
      */
     public boolean isOnCooldown(String key, EntityPlayer player) {
+        if (AbilityController.Instance != null) {
+            Ability ability = AbilityController.Instance.resolveAbility(key);
+            if (ability != null && ability.isPerAbilityCooldown()) {
+                return isOnPerAbilityCooldown(key);
+            }
+        }
         return isOnCooldown(player);
     }
 
@@ -373,18 +621,24 @@ public class PlayerAbilityData implements IPlayerAbilityData {
 
     /**
      * Reset cooldown for a specific ability key.
-     * Currently resets the universal cooldown.
+     * Resets per-ability cooldown if applicable, and global cooldown.
      */
     public void resetCooldown(String key) {
+        resetPerAbilityCooldown(key);
         cooldownEndTime = 0;
     }
 
     /**
-     * Reset all cooldowns.
+     * Reset all cooldowns (global + all per-ability).
      */
     public void resetAllCooldowns() {
         cooldownEndTime = 0;
+        resetAllPerAbilityCooldowns();
     }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // IPlayerAbilityData INTERFACE
+    // ═══════════════════════════════════════════════════════════════════
 
     @Override
     public boolean activateAbility() {
@@ -394,28 +648,6 @@ public class PlayerAbilityData implements IPlayerAbilityData {
     @Override
     public boolean activateAbility(String key) {
         return activateAbility(playerData.player, key);
-    }
-
-    // ═══════════════════════════════════════════════════════════════════
-    // STATE QUERIES
-    // ═══════════════════════════════════════════════════════════════════
-
-    public boolean isExecutingAbility() {
-        return currentAbility != null && currentAbility.isExecuting();
-    }
-
-    public Ability getCurrentAbility() {
-        return currentAbility;
-    }
-
-    public void interruptCurrentAbility() {
-        if (currentAbility != null && currentAbility.isExecuting()) {
-            currentAbility.interrupt();
-            stopAbilityAnimation();
-            currentAbility = null;
-            currentAbilityKey = null;
-            currentTarget = null;
-        }
     }
 
     @Override
@@ -435,7 +667,227 @@ public class PlayerAbilityData implements IPlayerAbilityData {
     @Override
     public void resetCooldown() {
         cooldownEndTime = 0;
+        resetAllPerAbilityCooldowns();
     }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // INTERRUPTION (convenience overload)
+    // ═══════════════════════════════════════════════════════════════════
+
+    public void interruptCurrentAbility() {
+        interruptCurrentAbility(null, 0);
+    }
+
+    /**
+     * Try to cancel the current ability via double-press.
+     * Only succeeds if within the cancel window and not in DAZED phase.
+     * Also handles cancellation during chain delay (between chain entries).
+     *
+     * @return true if the ability was cancelled
+     */
+    public boolean tryCancelAbility() {
+        boolean hasExecutingAbility = currentAbility != null && currentAbility.isExecuting();
+        boolean isInChainDelay = currentChain != null && chainDelayRemaining > 0;
+
+        if (!hasExecutingAbility && !isInChainDelay) return false;
+
+        // Only allow cancel during WINDUP phase
+        if (hasExecutingAbility) {
+            AbilityPhase phase = currentAbility.getPhase();
+            if (phase != AbilityPhase.WINDUP) return false;
+        }
+
+        long worldTime = getWorldTime();
+        if (lastAbilityActivationTime < 0 || (worldTime - lastAbilityActivationTime) > CANCEL_WINDOW_TICKS) {
+            // Outside cancel window — update time so a quick follow-up press can cancel
+            lastAbilityActivationTime = worldTime;
+            return false;
+        }
+
+        cancelCurrentAbility();
+        return true;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // ENTITY RECONSTRUCTION RESET
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * Handle entity reconstruction events (dimension change, death/respawn, etc.).
+     * Cleans up any executing ability state without firing script events (those were
+     * already fired on the original entity), clears transient runtime state, and
+     * re-syncs ability data to the client on the new entity.
+     * <p>
+     * This should be called whenever the player's entity object is recreated by Forge,
+     * since the client-side entity loses all synced ability state.
+     *
+     * @param clearCooldowns true to fully reset cooldowns (dimension change),
+     *                       false to preserve cooldowns (death/respawn — interrupt already rolled them)
+     * @param clearToggles   true to clear active toggles (death/respawn),
+     *                       false to keep them (dimension change)
+     */
+    public void onEntityReconstructed(boolean clearCooldowns, boolean clearToggles) {
+        // Clean up any executing ability silently (no script events — already fired on old entity)
+        if (currentAbility != null && currentAbility.isExecuting()) {
+            removeTelegraph(currentAbility);
+            currentAbility.interrupt();
+            stopAbilityAnimation();
+            releaseRotationControl();
+            releaseLockedPosition();
+        }
+
+        // Clear chain and concurrent state
+        if (currentChain != null) currentChain.clearInstanceScript();
+        currentChain = null;
+        chainEntryIndex = -1;
+        chainDelayRemaining = -1;
+        interruptConcurrentSlots();
+
+        // Clear all transient state
+        currentAbility = null;
+        currentAbilityKey = null;
+        currentTarget = null;
+        lastAbilityActivationTime = -1;
+
+        if (clearCooldowns) {
+            cooldownEndTime = 0;
+            resetAllPerAbilityCooldowns();
+        }
+        interruptCooldownRolled = false;
+
+        if (clearToggles) {
+            clearActiveToggles();
+        }
+
+        // Force-send cleared lock state to client. We must always send this
+        // (not gated by lastSyncedFlags != 0) because the NEW entity's client
+        // may have stale lock state from before the reconstruction.
+        lastSyncedFlags = 0;
+        EntityPlayer player = playerData.player;
+        if (player instanceof EntityPlayerMP) {
+            PlayerAbilityStatePacket.sendToPlayer((EntityPlayerMP) player, (byte) 0, 0, 0);
+        }
+
+        // Re-sync full ability data (unlocked list, selection, toggles) to client
+        syncToClient();
+    }
+
+    /**
+     * Fully reset transient ability execution state when changing dimensions.
+     * Cooldowns are preserved so dimension changes cannot bypass them.
+     * Keeps active toggles (dimension change shouldn't reset ongoing effects).
+     */
+    public void resetOnDimensionChange() {
+        trackingAbilityPosition = false;
+        onEntityReconstructed(false, false);
+    }
+
+    /**
+     * Reset ability state when a large-distance teleport is detected during execution.
+     * Same behavior as dimension change: silent cleanup, preserve cooldowns, keep toggles.
+     */
+    public void resetOnTeleport() {
+        onEntityReconstructed(false, false);
+    }
+
+    /**
+     * Reset ability state after death/respawn.
+     * Preserves cooldowns (the death handler interrupted the ability which rolled cooldown
+     * via onInterruptComplete) but clears active toggles (death should end ongoing effects).
+     */
+    public void resetOnRespawn() {
+        onEntityReconstructed(false, true);
+    }
+
+    /**
+     * Reset ability state on login. Clears all transient execution state (current ability,
+     * locks, chains, cooldowns) that may have leaked from a previous session via the
+     * PlayerData cache. Toggles are NOT cleared — they are restored from NBT by readFromNBT.
+     * <p>
+     * Does NOT send packets — called before the client's sync state is initialized.
+     * The caller must trigger a full ability sync afterwards (e.g. via syncToClient).
+     */
+    public void resetOnLogin() {
+        trackingAbilityPosition = false;
+
+        // Silently clean up any stale executing ability
+        if (currentAbility != null && currentAbility.isExecuting()) {
+            removeTelegraph(currentAbility);
+            currentAbility.interrupt();
+            stopAbilityAnimation();
+            releaseRotationControl();
+            releaseLockedPosition();
+        }
+
+        // Clear chain and concurrent state
+        if (currentChain != null) currentChain.clearInstanceScript();
+        currentChain = null;
+        chainEntryIndex = -1;
+        chainDelayRemaining = -1;
+        interruptConcurrentSlots();
+
+        // Clear all transient state
+        currentAbility = null;
+        currentAbilityKey = null;
+        currentTarget = null;
+        lastAbilityActivationTime = -1;
+
+        // Cooldowns are absolute world-time deadlines and are restored from NBT, so relogging
+        // must not clear them or it becomes a way to bypass them.
+        interruptCooldownRolled = false;
+
+        // Reset sync tracking so next sync sends fresh state
+        lastSyncedFlags = 0;
+    }
+
+    /**
+     * Clean up ability state on disconnect. Interrupts any executing ability (fires events,
+     * rolls cooldown) before the player entity goes away, then clears all transient state.
+     * This ensures scripts receive proper interrupt/complete events and prevents stale state
+     * from leaking into the next session via the PlayerData cache.
+     */
+    public void resetOnDisconnect() {
+        // Interrupt with events so scripts know the ability ended
+        if (currentAbility != null && currentAbility.isExecuting()) {
+            interruptCurrentAbility(null, 0);
+        }
+        // Clear any remaining transient state (chains, locks)
+        // Don't clear toggles — they were already saved to NBT by this point
+        // Don't clear cooldowns — they persist across sessions
+        onEntityReconstructed(false, false);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // DAMAGE HANDLING
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * Handle damage taken while an ability is executing.
+     * Called from LivingHurtEvent BEFORE damage is applied to health.
+     * Triggers Guard counter detection and handles ability interruption.
+     *
+     * @param source The damage source
+     * @param amount The damage amount (post-armor)
+     * @return The modified damage amount (reduced by guard, or 0 if counter absorbs)
+     */
+    public float onDamage(DamageSource source, float amount) {
+        if (currentAbility == null || !currentAbility.isExecuting()) {
+            return amount;
+        }
+        if (currentAbility.isInvulnerableForCurrentPhase()) {
+            return 0;
+        }
+
+        if (currentAbility != null && currentAbility.canInterrupt(source)) {
+            interruptCurrentAbility(source, amount);
+        }
+
+        return amount;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // STATE QUERIES (Player-specific)
+    // ═══════════════════════════════════════════════════════════════════
 
     /**
      * Check if the player's movement should be locked due to an executing ability.
@@ -446,65 +898,131 @@ public class PlayerAbilityData implements IPlayerAbilityData {
             && currentAbility.isMovementLockedForCurrentPhase();
     }
 
+    /**
+     * Returns true if an ability-driven animation is currently playing.
+     * Used by PlayerData.onLogin() to detect orphaned ability animations.
+     */
+    public boolean isPlayingAbilityAnimation() {
+        return playingAbilityAnimation;
+    }
+
+    /**
+     * Clears an orphaned ability animation (e.g. after relog when the ability is gone).
+     * Stops the animation and resets the tracking flag.
+     */
+    public void clearOrphanedAbilityAnimation() {
+        stopAbilityAnimation();
+    }
+
     // ═══════════════════════════════════════════════════════════════════
-    // TELEGRAPH
+    // ROTATION CONTROL (Player-specific application)
     // ═══════════════════════════════════════════════════════════════════
 
-    private void spawnTelegraph(Ability ability, EntityPlayer player, EntityLivingBase target) {
-        TelegraphInstance telegraph = ability.createTelegraph(player, target);
-        if (telegraph != null) {
-            ability.setTelegraphInstance(telegraph);
+    /**
+     * Apply rotation control on the server side.
+     * Enforces locked rotation values on the player entity.
+     */
+    private void applyRotationControl(EntityPlayer player) {
+        if (!rotationLocked || currentAbility == null) return;
+
+        if (currentAbility.isRotationLockedForCurrentPhase()) {
+            player.rotationYaw = lockedYaw;
+            player.rotationPitch = lockedPitch;
+            player.prevRotationYaw = lockedYaw;
+            player.prevRotationPitch = lockedPitch;
             if (player instanceof EntityPlayerMP) {
-                TelegraphSpawnPacket.sendToTracking(telegraph, player);
+                player.rotationYawHead = lockedYaw;
             }
         }
     }
 
-    private void removeTelegraph(Ability ability, EntityPlayer player) {
-        TelegraphInstance telegraph = ability.getTelegraphInstance();
-        if (telegraph != null) {
-            if (player instanceof EntityPlayerMP) {
-                TelegraphRemovePacket.sendToTracking(telegraph.getInstanceId(), player);
-            }
-            ability.setTelegraphInstance(null);
+    // ═══════════════════════════════════════════════════════════════════
+    // POSITION LOCKING (Player-specific application)
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * Apply position lock on the server side.
+     * Snaps player back to locked position and zeroes motion.
+     */
+    private void applyPositionLock(EntityPlayer player) {
+        if (!positionLocked) return;
+
+        player.setPosition(lockedPosX, lockedPosY, lockedPosZ);
+        player.prevPosX = lockedPosX;
+        player.prevPosY = lockedPosY;
+        player.prevPosZ = lockedPosZ;
+        player.motionX = 0;
+        player.motionY = 0;
+        player.motionZ = 0;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // ABILITY STATE SYNC
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * Build the current ability state flags byte.
+     */
+    private byte getAbilityStateFlags() {
+        byte flags = 0;
+        if (currentAbility == null || !currentAbility.isExecuting()) return flags;
+
+        if (currentAbility.isMovementLockedForCurrentPhase()) {
+            flags |= PlayerAbilityStatePacket.FLAG_MOVEMENT_LOCKED;
+        }
+        if (rotationLocked && currentAbility.isRotationLockedForCurrentPhase()) {
+            flags |= PlayerAbilityStatePacket.FLAG_ROTATION_LOCKED;
+        }
+        if (currentAbility.hasAbilityMovement()
+            && (currentAbility.getPhase() == AbilityPhase.ACTIVE || currentAbility.getPhase() == AbilityPhase.WINDUP)) {
+            flags |= PlayerAbilityStatePacket.FLAG_HAS_ABILITY_MOVEMENT;
+        }
+        if (positionLocked) {
+            flags |= PlayerAbilityStatePacket.FLAG_POSITION_LOCKED;
+        }
+        if (wasFlyingAtLock) {
+            flags |= PlayerAbilityStatePacket.FLAG_WAS_FLYING_AT_LOCK;
+        }
+        if (currentAbility.getPhase() == AbilityPhase.ACTIVE) {
+            flags |= PlayerAbilityStatePacket.FLAG_ACTIVE_PHASE;
+        }
+        return flags;
+    }
+
+    /**
+     * Send ability state to client if flags changed since last sync.
+     */
+    private void syncAbilityStateIfNeeded(EntityPlayer player) {
+        if (!(player instanceof EntityPlayerMP)) return;
+        byte flags = getAbilityStateFlags();
+        if (flags != lastSyncedFlags) {
+            lastSyncedFlags = flags;
+            PlayerAbilityStatePacket.sendToPlayer((EntityPlayerMP) player, flags, lockedYaw, lockedPitch);
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    // ANIMATION
-    // ═══════════════════════════════════════════════════════════════════
-
-    public void playAbilityAnimation(Animation animation) {
-        if (animation == null || AnimationController.Instance == null) return;
-        playerData.animationData.setEnabled(true);
-        playerData.animationData.setAnimation(animation);
-        playerData.animationData.updateClient();
+    /**
+     * Send cleared (all-zero) state to client. Called on ability completion/interrupt.
+     */
+    private void syncAbilityStateClear(EntityPlayer player) {
+        if (!(player instanceof EntityPlayerMP)) return;
+        if (lastSyncedFlags != 0) {
+            lastSyncedFlags = 0;
+            PlayerAbilityStatePacket.sendToPlayer((EntityPlayerMP) player, (byte) 0, 0, 0);
+        }
     }
 
-    public void playAbilityAnimation(int animation) {
-        if (animation < 0) return;
-        if (AnimationController.Instance == null) return;
-        if (AnimationController.Instance.get(animation) == null) return;
-
-        playAbilityAnimation((Animation) AnimationController.Instance.get(animation));
-    }
-
-    public void playAbilityAnimation(String animation) {
-        if (animation.isEmpty()) return;
-        if (AnimationController.Instance == null) return;
-        if (AnimationController.Instance.get(animation, true) == null) return;
-
-        playAbilityAnimation((Animation) AnimationController.Instance.get(animation, true));
-    }
-
-    private void stopAbilityAnimation() {
-        playerData.animationData.setAnimation(null);
-        playerData.animationData.updateClient();
-    }
-
-    private void playAbilitySound(EntityPlayer player, String sound) {
-        if (sound != null && !sound.isEmpty()) {
-            player.worldObj.playSoundAtEntity(player, sound, 1.0f, 1.0f);
+    /**
+     * Periodic safety check: if no ability is executing but the client may have
+     * stale lock flags, send a clear. Prevents stuck clients from missed packets.
+     */
+    public void ensureLockStateClear() {
+        if (isExecutingAbility() || isExecutingChain()) return;
+        EntityPlayer player = playerData.player;
+        if (!(player instanceof EntityPlayerMP)) return;
+        if (lastSyncedFlags != 0) {
+            lastSyncedFlags = 0;
+            PlayerAbilityStatePacket.sendToPlayer((EntityPlayerMP) player, (byte) 0, 0, 0);
         }
     }
 
@@ -519,6 +1037,33 @@ public class PlayerAbilityData implements IPlayerAbilityData {
         }
         compound.setTag("PlayerAbilities", list);
         compound.setInteger("PlayerAbilitySelected", selectedIndex);
+        compound.setBoolean("AbilityAnimating", playingAbilityAnimation);
+
+        // Active toggles (compound format with state)
+        NBTTagList toggleList = new NBTTagList();
+        for (Map.Entry<String, AbilityToggleEntry> entry : activeToggles.entrySet()) {
+            NBTTagCompound toggleNbt = new NBTTagCompound();
+            toggleNbt.setString("Key", entry.getKey());
+            toggleNbt.setInteger("State", entry.getValue().getState());
+            toggleList.appendTag(toggleNbt);
+        }
+        compound.setTag("ActiveToggles", toggleList);
+
+        // Cooldowns are absolute world-time deadlines, so they stay meaningful across sessions
+        NBTTagCompound cooldowns = new NBTTagCompound();
+        cooldowns.setLong("GlobalEnd", cooldownEndTime);
+        cooldowns.setInteger("GlobalDuration", globalCooldownDuration);
+        NBTTagList perAbilityList = new NBTTagList();
+        for (Map.Entry<String, Long> entry : perAbilityCooldownEndTimes.entrySet()) {
+            NBTTagCompound cooldownNbt = new NBTTagCompound();
+            cooldownNbt.setString("Key", entry.getKey());
+            cooldownNbt.setLong("End", entry.getValue());
+            Integer duration = perAbilityCooldownDurations.get(entry.getKey());
+            cooldownNbt.setInteger("Duration", duration == null ? 0 : duration);
+            perAbilityList.appendTag(cooldownNbt);
+        }
+        cooldowns.setTag("PerAbility", perAbilityList);
+        compound.setTag("AbilityCooldowns", cooldowns);
     }
 
     public void readFromNBT(NBTTagCompound compound) {
@@ -533,8 +1078,67 @@ public class PlayerAbilityData implements IPlayerAbilityData {
             }
         }
         selectedIndex = compound.getInteger("PlayerAbilitySelected");
+
+        // Prune abilities that no longer exist (deleted custom abilities or removed built-ins)
+        validateUnlockedAbilities();
+
         if (selectedIndex >= unlockedAbilities.size()) {
             selectedIndex = Math.max(0, unlockedAbilities.size() - 1);
+        }
+        playingAbilityAnimation = compound.getBoolean("AbilityAnimating");
+
+        // Active toggles - restore state directly (no onToggle callback during load)
+        activeToggles.clear();
+        if (compound.hasKey("ActiveToggles")) {
+            NBTTagList toggleNbt = compound.getTagList("ActiveToggles", 10); // 10 = TAG_COMPOUND
+            for (int i = 0; i < toggleNbt.tagCount(); i++) {
+                NBTTagCompound entry = toggleNbt.getCompoundTagAt(i);
+                String key = entry.getString("Key");
+                int state = entry.hasKey("State") ? entry.getInteger("State") : 1;
+                setToggleEntryDirect(key, state);
+            }
+        }
+
+        if (compound.hasKey("AbilityCooldowns")) {
+            cooldownEndTime = 0;
+            globalCooldownDuration = 0;
+            resetAllPerAbilityCooldowns();
+
+            NBTTagCompound cooldowns = compound.getCompoundTag("AbilityCooldowns");
+            cooldownEndTime = cooldowns.getLong("GlobalEnd");
+            globalCooldownDuration = cooldowns.getInteger("GlobalDuration");
+            NBTTagList perAbilityList = cooldowns.getTagList("PerAbility", 10); // 10 = TAG_COMPOUND
+            for (int i = 0; i < perAbilityList.tagCount(); i++) {
+                NBTTagCompound entry = perAbilityList.getCompoundTagAt(i);
+                String key = entry.getString("Key");
+                if (key == null || key.isEmpty()) continue;
+                perAbilityCooldownEndTimes.put(key, entry.getLong("End"));
+                perAbilityCooldownDurations.put(key, entry.getInteger("Duration"));
+            }
+        }
+    }
+
+    /**
+     * Remove any unlocked ability keys that can no longer be resolved or
+     * are no longer allowed for players (e.g. NPC-only abilities).
+     * Called during load to clean up references to deleted/restricted abilities.
+     * Supports both regular ability keys and "chain:" prefixed chained ability keys.
+     */
+    private void validateUnlockedAbilities() {
+        if (AbilityController.Instance == null) return;
+        if (playerData == null || !(playerData.player instanceof EntityPlayerMP)) return;
+
+        Iterator<String> it = unlockedAbilities.iterator();
+        while (it.hasNext()) {
+            String key = it.next();
+            IAbilityAction resolved = resolveActionKey(key);
+            if (resolved == null) {
+                it.remove();
+                LogWriter.info("Removed invalid ability reference from player data: " + key);
+            } else if (!resolved.getAllowedBy().allowsPlayer()) {
+                it.remove();
+                LogWriter.info("Removed non-player ability from player data: " + key);
+            }
         }
     }
 }

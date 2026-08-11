@@ -1,9 +1,14 @@
 package kamkeel.npcs.controllers.data.ability.type;
 
+import cpw.mods.fml.relauncher.Side;
+import cpw.mods.fml.relauncher.SideOnly;
 import kamkeel.npcs.controllers.data.ability.Ability;
-import kamkeel.npcs.controllers.data.ability.LockMovementType;
-import kamkeel.npcs.controllers.data.ability.TargetingMode;
-import kamkeel.npcs.controllers.data.ability.UserType;
+import kamkeel.npcs.controllers.data.ability.enums.LockMode;
+import kamkeel.npcs.controllers.data.ability.enums.TargetFilter;
+import kamkeel.npcs.controllers.data.ability.enums.TargetingMode;
+import kamkeel.npcs.controllers.data.ability.enums.UserType;
+import kamkeel.npcs.controllers.data.ability.util.AbilityTargetHelper;
+import kamkeel.npcs.controllers.data.ability.gui.AbilityFieldDefs;
 import kamkeel.npcs.controllers.data.telegraph.TelegraphType;
 import net.minecraft.block.Block;
 import net.minecraft.entity.Entity;
@@ -13,15 +18,8 @@ import net.minecraft.util.AxisAlignedBB;
 import net.minecraft.util.MathHelper;
 import net.minecraft.util.Vec3;
 import net.minecraft.world.World;
-import noppes.npcs.entity.EntityNPCInterface;
-
 import noppes.npcs.api.ability.type.IAbilityTeleport;
-
 import noppes.npcs.client.gui.builder.FieldDef;
-import kamkeel.npcs.controllers.data.ability.gui.AbilityFieldDefs;
-
-import cpw.mods.fml.relauncher.Side;
-import cpw.mods.fml.relauncher.SideOnly;
 
 import java.util.Arrays;
 import java.util.List;
@@ -43,10 +41,14 @@ public class AbilityTeleport extends Ability implements IAbilityTeleport {
         @Override
         public String toString() {
             switch (this) {
-                case BLINK: return "ability.teleport.blink";
-                case BEHIND: return "ability.teleport.behind";
-                case SINGLE: return "ability.teleport.single";
-                default: return name();
+                case BLINK:
+                    return "ability.teleport.blink";
+                case BEHIND:
+                    return "ability.teleport.behind";
+                case SINGLE:
+                    return "ability.teleport.single";
+                default:
+                    return name();
             }
         }
     }
@@ -78,17 +80,15 @@ public class AbilityTeleport extends Ability implements IAbilityTeleport {
         this.minRange = 5.0f;
         this.cooldownTicks = 0;
         this.windUpTicks = 10;
-        this.lockMovement = LockMovementType.NO;
+        this.lockMovement = LockMode.NO;
         // No telegraph for teleport - it's instant repositioning
         this.telegraphType = TelegraphType.NONE;
         this.showTelegraph = false;
         this.windUpSound = "mob.endermen.portal";
         this.activeSound = "mob.endermen.portal";
-    }
-
-    @Override
-    public boolean hasDamage() {
-        return false;
+        this.defaultIconLayers = new DefaultIconLayer[]{
+            new DefaultIconLayer("customnpcs:textures/gui/ability/teleport.png")
+        };
     }
 
     @Override
@@ -102,13 +102,13 @@ public class AbilityTeleport extends Ability implements IAbilityTeleport {
     }
 
     @Override
-    public void onExecute(EntityLivingBase caster, EntityLivingBase target, World world) {
+    public void onExecute(EntityLivingBase caster, EntityLivingBase target) {
         currentBlink = 0;
         ticksSinceLastBlink = blinkDelayTicks; // Trigger first blink immediately
     }
 
     @Override
-    public void onActiveTick(EntityLivingBase caster, EntityLivingBase target, World world, int tick) {
+    public void onActiveTick(EntityLivingBase caster, EntityLivingBase target, int tick) {
         int blinkLimit = mode == TeleportMode.BLINK ? blinkCount : 1;
         if (currentBlink >= blinkLimit) {
             signalCompletion();
@@ -118,7 +118,7 @@ public class AbilityTeleport extends Ability implements IAbilityTeleport {
         ticksSinceLastBlink++;
 
         if (ticksSinceLastBlink >= blinkDelayTicks) {
-            performBlink(caster, target, world);
+            performBlink(caster, target, caster.worldObj);
             currentBlink++;
             ticksSinceLastBlink = 0;
 
@@ -394,6 +394,7 @@ public class AbilityTeleport extends Ability implements IAbilityTeleport {
         for (Entity entity : entities) {
             if (!(entity instanceof EntityLivingBase)) continue;
             if (entity == caster) continue;
+            if (!AbilityTargetHelper.shouldAffect(caster, entity, TargetFilter.ENEMIES, false)) continue;
 
             EntityLivingBase living = (EntityLivingBase) entity;
             double dist = Math.sqrt(Math.pow(living.posX - x, 2) + Math.pow(living.posZ - z, 2));
@@ -435,33 +436,20 @@ public class AbilityTeleport extends Ability implements IAbilityTeleport {
 
     @Override
     public void readTypeNBT(NBTTagCompound nbt) {
-        if (nbt.hasKey("mode")) {
-            try {
-                this.mode = TeleportMode.valueOf(nbt.getString("mode"));
-            } catch (Exception e) {
-                this.mode = TeleportMode.BLINK;
-            }
-        } else if (nbt.hasKey("pattern")) {
-            String legacy = nbt.getString("pattern");
-            if ("BEHIND_TARGET".equals(legacy)) {
-                this.mode = TeleportMode.BEHIND;
-            } else if ("RANDOM".equals(legacy)) {
-                this.mode = TeleportMode.BLINK;
-            } else {
-                this.mode = TeleportMode.SINGLE;
-            }
-        } else {
+        try {
+            this.mode = TeleportMode.valueOf(nbt.getString("mode"));
+        } catch (Exception e) {
             this.mode = TeleportMode.BLINK;
         }
         this.blinkCount = nbt.hasKey("blinkCount") ? nbt.getInteger("blinkCount") : 3;
         this.blinkDelayTicks = nbt.hasKey("blinkDelayTicks") ? nbt.getInteger("blinkDelayTicks") : 10;
-        this.blinkRadius = nbt.hasKey("blinkRadius") ? nbt.getFloat("blinkRadius") : 8.0f;
-        this.behindDistance = nbt.hasKey("behindDistance") ? nbt.getFloat("behindDistance") : 2.0f;
-        this.requireLineOfSight = !nbt.hasKey("requireLineOfSight") || nbt.getBoolean("requireLineOfSight");
-        this.damageAtStart = nbt.hasKey("damageAtStart") && nbt.getBoolean("damageAtStart");
-        this.damageAtEnd = nbt.hasKey("damageAtEnd") && nbt.getBoolean("damageAtEnd");
-        this.damage = nbt.hasKey("damage") ? nbt.getFloat("damage") : 5.0f;
-        this.damageRadius = nbt.hasKey("damageRadius") ? nbt.getFloat("damageRadius") : 2.0f;
+        this.blinkRadius = nbt.getFloat("blinkRadius");
+        this.behindDistance = nbt.getFloat("behindDistance");
+        this.requireLineOfSight = nbt.getBoolean("requireLineOfSight");
+        this.damageAtStart = nbt.getBoolean("damageAtStart");
+        this.damageAtEnd = nbt.getBoolean("damageAtEnd");
+        this.damage = nbt.getFloat("damage");
+        this.damageRadius = nbt.getFloat("damageRadius");
     }
 
     // Getters & Setters
@@ -547,6 +535,9 @@ public class AbilityTeleport extends Ability implements IAbilityTeleport {
     public void setDamage(float damage) {
         this.damage = damage;
     }
+
+    @Override
+    public float getDisplayDamage() { return damage; }
 
     public float getDamageRadius() {
         return damageRadius;

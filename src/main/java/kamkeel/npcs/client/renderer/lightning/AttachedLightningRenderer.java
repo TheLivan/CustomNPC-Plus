@@ -3,7 +3,6 @@ package kamkeel.npcs.client.renderer.lightning;
 import net.minecraft.client.renderer.Tessellator;
 import org.lwjgl.opengl.GL11;
 
-import java.awt.Color;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
@@ -37,6 +36,7 @@ public class AttachedLightningRenderer {
 
         public float getAlphaMultiplier() {
             // Fade out over lifetime
+            if (maxAge <= 0) return 0.0f;
             return 1.0f - ((float) age / (float) maxAge);
         }
 
@@ -83,6 +83,28 @@ public class AttachedLightningRenderer {
                 spawnAccumulator -= 1.0f;
                 arcs.add(createArc(radius, outerColor, innerColor, maxAge));
             }
+        }
+
+        /**
+         * Age existing arcs and remove dead ones without spawning new arcs.
+         * Use with addArc() for custom arc generation.
+         */
+        public void tick() {
+            Iterator<LightningArc> iter = arcs.iterator();
+            while (iter.hasNext()) {
+                LightningArc arc = iter.next();
+                arc.tick();
+                if (arc.isDead()) {
+                    iter.remove();
+                }
+            }
+        }
+
+        /**
+         * Add a custom arc to the state.
+         */
+        public void addArc(LightningArc arc) {
+            arcs.add(arc);
         }
 
         /**
@@ -143,8 +165,8 @@ public class AttachedLightningRenderer {
      * Generate a jagged lightning path between two points.
      */
     private static List<double[]> generateLightningPath(double x1, double y1, double z1,
-                                                         double x2, double y2, double z2,
-                                                         int segments, float displacement) {
+                                                        double x2, double y2, double z2,
+                                                        int segments, float displacement) {
         List<double[]> points = new ArrayList<>();
         points.add(new double[]{x1, y1, z1});
 
@@ -186,10 +208,9 @@ public class AttachedLightningRenderer {
     private static void renderBoltPath(Tessellator tess, List<double[]> points, int color, float width, float alpha) {
         if (alpha <= 0.01f) return;
 
-        Color c = new Color(color);
-        int r = c.getRed();
-        int g = c.getGreen();
-        int b = c.getBlue();
+        int r = (color >> 16) & 0xFF;
+        int g = (color >> 8) & 0xFF;
+        int b = color & 0xFF;
         int a = Math.min(255, Math.max(0, (int) (alpha * 255)));
 
         for (int i = 0; i < points.size() - 1; i++) {
@@ -229,6 +250,17 @@ public class AttachedLightningRenderer {
 
             tess.draw();
         }
+    }
+
+    /**
+     * Create a lightning arc between two arbitrary points.
+     */
+    public static LightningArc createArcBetween(double x1, double y1, double z1,
+                                                double x2, double y2, double z2,
+                                                float displacement, int outerColor, int innerColor, int maxAge) {
+        int segments = 4 + rand.nextInt(3);
+        List<double[]> points = generateLightningPath(x1, y1, z1, x2, y2, z2, segments, displacement);
+        return new LightningArc(points, maxAge, outerColor, innerColor);
     }
 
     // ==================== INSTANT RENDERING (no persistence) ====================

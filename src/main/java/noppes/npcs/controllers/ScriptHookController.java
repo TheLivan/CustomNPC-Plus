@@ -1,11 +1,15 @@
 package noppes.npcs.controllers;
 
 import noppes.npcs.api.event.IAbilityEvent;
+import noppes.npcs.api.event.IChainEvent;
 import noppes.npcs.api.event.IAnimationEvent;
+import noppes.npcs.api.event.IAuctionEvent;
 import noppes.npcs.api.event.IBlockEvent;
 import noppes.npcs.api.event.ICustomGuiEvent;
 import noppes.npcs.api.event.ICustomNPCsEvent;
 import noppes.npcs.api.event.IDialogEvent;
+import noppes.npcs.api.event.IEnergyBarrierEvent;
+import noppes.npcs.api.event.IEnergyProjectileEvent;
 import noppes.npcs.api.event.IFactionEvent;
 import noppes.npcs.api.event.IForgeEvent;
 import noppes.npcs.api.event.IItemEvent;
@@ -37,6 +41,8 @@ import static noppes.npcs.constants.ScriptContext.ITEM;
 import static noppes.npcs.constants.ScriptContext.LINKED_ITEM;
 import static noppes.npcs.constants.ScriptContext.NPC;
 import static noppes.npcs.constants.ScriptContext.PLAYER;
+import static noppes.npcs.constants.ScriptContext.ABILITY;
+import static noppes.npcs.constants.ScriptContext.CHAINED_ABILITY;
 import static noppes.npcs.constants.ScriptContext.RECIPE;
 
 /**
@@ -77,6 +83,7 @@ public class ScriptHookController implements IScriptHookHandler {
         initializeLinkedItemHooks();
         initializeRecipeHooks();
         initializeEffectHooks();
+        initializeAbilityHooks();
         initializeForgeHooks();
     }
 
@@ -106,13 +113,41 @@ public class ScriptHookController implements IScriptHookHandler {
         hook(NPC, PROJECTILE_TICK, IProjectileEvent.UpdateEvent.class);
         hook(NPC, PROJECTILE_IMPACT, IProjectileEvent.ImpactEvent.class);
 
+        // Energy Projectile
+        hook(NPC, ENERGY_PROJECTILE_FIRED, IEnergyProjectileEvent.FiredEvent.class);
+        hook(NPC, ENERGY_PROJECTILE_TICK, IEnergyProjectileEvent.UpdateEvent.class);
+        hook(NPC, ENERGY_PROJECTILE_ENTITY_IMPACT, IEnergyProjectileEvent.EntityImpactEvent.class);
+        hook(NPC, ENERGY_PROJECTILE_BLOCK_IMPACT, IEnergyProjectileEvent.BlockImpactEvent.class);
+        hook(NPC, ENERGY_PROJECTILE_EXPIRED, IEnergyProjectileEvent.ExpiredEvent.class);
+
         // Ability
         hook(NPC, ABILITY_START, IAbilityEvent.StartEvent.class);
         hook(NPC, ABILITY_EXECUTE, IAbilityEvent.ExecuteEvent.class);
         hook(NPC, ABILITY_HIT, IAbilityEvent.HitEvent.class);
+        hook(NPC, ABILITY_DEFEND, IAbilityEvent.DefendEvent.class);
         hook(NPC, ABILITY_TICK, IAbilityEvent.TickEvent.class);
         hook(NPC, ABILITY_INTERRUPT, IAbilityEvent.InterruptEvent.class);
         hook(NPC, ABILITY_COMPLETE, IAbilityEvent.CompleteEvent.class);
+        hook(NPC, ABILITY_TOGGLE, IAbilityEvent.ToggleEvent.class);
+        hook(NPC, ABILITY_TOGGLE_TICK, IAbilityEvent.ToggleUpdateEvent.class);
+
+        // Chain
+        hook(NPC, CHAIN_START, IChainEvent.StartEvent.class);
+        hook(NPC, CHAIN_NEXT, IChainEvent.NextEvent.class);
+        hook(NPC, CHAIN_COMPLETE, IChainEvent.CompleteEvent.class);
+        hook(NPC, CHAIN_INTERRUPT, IChainEvent.InterruptEvent.class);
+
+        // Energy Barrier
+        hook(NPC, ENERGY_BARRIER_SPAWNED, IEnergyBarrierEvent.SpawnedEvent.class);
+        hook(NPC, ENERGY_BARRIER_TICK, IEnergyBarrierEvent.UpdateEvent.class);
+        hook(NPC, ENERGY_BARRIER_HIT, IEnergyBarrierEvent.HitEvent.class);
+        hook(NPC, ENERGY_BARRIER_DESTROYED, IEnergyBarrierEvent.DestroyedEvent.class);
+
+        // Animation
+        hook(NPC, ANIMATION_START, IAnimationEvent.Started.class);
+        hook(NPC, ANIMATION_END, IAnimationEvent.Ended.class);
+        hook(NPC, ANIMATION_FRAME_ENTER, IAnimationEvent.IFrameEvent.Entered.class);
+        hook(NPC, ANIMATION_FRAME_EXIT, IAnimationEvent.IFrameEvent.Exited.class);
     }
 
     private void initializePlayerHooks() {
@@ -208,6 +243,43 @@ public class ScriptHookController implements IScriptHookHandler {
         hook(PLAYER, ANIMATION_FRAME_ENTER, IAnimationEvent.IFrameEvent.Entered.class);
         hook(PLAYER, ANIMATION_FRAME_EXIT, IAnimationEvent.IFrameEvent.Exited.class);
 
+        // Energy Projectile
+        hook(PLAYER, ENERGY_PROJECTILE_FIRED, IEnergyProjectileEvent.FiredEvent.class);
+        hook(PLAYER, ENERGY_PROJECTILE_TICK, IEnergyProjectileEvent.UpdateEvent.class);
+        hook(PLAYER, ENERGY_PROJECTILE_ENTITY_IMPACT, IEnergyProjectileEvent.EntityImpactEvent.class);
+        hook(PLAYER, ENERGY_PROJECTILE_BLOCK_IMPACT, IEnergyProjectileEvent.BlockImpactEvent.class);
+        hook(PLAYER, ENERGY_PROJECTILE_EXPIRED, IEnergyProjectileEvent.ExpiredEvent.class);
+
+        // Energy Barrier
+        hook(PLAYER, ENERGY_BARRIER_SPAWNED, IEnergyBarrierEvent.SpawnedEvent.class);
+        hook(PLAYER, ENERGY_BARRIER_TICK, IEnergyBarrierEvent.UpdateEvent.class);
+        hook(PLAYER, ENERGY_BARRIER_HIT, IEnergyBarrierEvent.HitEvent.class);
+        hook(PLAYER, ENERGY_BARRIER_DESTROYED, IEnergyBarrierEvent.DestroyedEvent.class);
+
+        // Ability
+        hook(PLAYER, ABILITY_START, IAbilityEvent.StartEvent.class);
+        hook(PLAYER, ABILITY_EXECUTE, IAbilityEvent.ExecuteEvent.class);
+        hook(PLAYER, ABILITY_HIT, IAbilityEvent.HitEvent.class);
+        hook(PLAYER, ABILITY_DEFEND, IAbilityEvent.DefendEvent.class);
+        hook(PLAYER, ABILITY_TICK, IAbilityEvent.TickEvent.class);
+        hook(PLAYER, ABILITY_INTERRUPT, IAbilityEvent.InterruptEvent.class);
+        hook(PLAYER, ABILITY_COMPLETE, IAbilityEvent.CompleteEvent.class);
+        hook(PLAYER, ABILITY_TOGGLE, IAbilityEvent.ToggleEvent.class);
+        hook(PLAYER, ABILITY_TOGGLE_TICK, IAbilityEvent.ToggleUpdateEvent.class);
+
+        // Chain
+        hook(PLAYER, CHAIN_START, IChainEvent.StartEvent.class);
+        hook(PLAYER, CHAIN_NEXT, IChainEvent.NextEvent.class);
+        hook(PLAYER, CHAIN_COMPLETE, IChainEvent.CompleteEvent.class);
+        hook(PLAYER, CHAIN_INTERRUPT, IChainEvent.InterruptEvent.class);
+
+        // Auction
+        hook(PLAYER, AUCTION_CREATE, IAuctionEvent.CreateEvent.class);
+        hook(PLAYER, AUCTION_BID, IAuctionEvent.BidEvent.class);
+        hook(PLAYER, AUCTION_BUYOUT, IAuctionEvent.BuyoutEvent.class);
+        hook(PLAYER, AUCTION_CANCEL, IAuctionEvent.CancelEvent.class);
+        hook(PLAYER, AUCTION_CLAIM, IAuctionEvent.ClaimEvent.class);
+
         // Profile
         hook(PLAYER, PROFILE_CHANGE, IPlayerEvent.ProfileEvent.Changed.class);
         hook(PLAYER, PROFILE_REMOVE, IPlayerEvent.ProfileEvent.Removed.class);
@@ -280,6 +352,25 @@ public class ScriptHookController implements IScriptHookHandler {
         hook(EFFECT, ON_EFFECT_ADD, IPlayerEvent.EffectEvent.Added.class);
         hook(EFFECT, ON_EFFECT_TICK, IPlayerEvent.EffectEvent.Ticked.class);
         hook(EFFECT, ON_EFFECT_REMOVE, IPlayerEvent.EffectEvent.Removed.class);
+    }
+
+    private void initializeAbilityHooks() {
+        // Ability context (internal per-ability scripts)
+        hook(ABILITY, ABILITY_START, IAbilityEvent.StartEvent.class);
+        hook(ABILITY, ABILITY_EXECUTE, IAbilityEvent.ExecuteEvent.class);
+        hook(ABILITY, ABILITY_HIT, IAbilityEvent.HitEvent.class);
+        hook(ABILITY, ABILITY_DEFEND, IAbilityEvent.DefendEvent.class);
+        hook(ABILITY, ABILITY_TICK, IAbilityEvent.TickEvent.class);
+        hook(ABILITY, ABILITY_INTERRUPT, IAbilityEvent.InterruptEvent.class);
+        hook(ABILITY, ABILITY_COMPLETE, IAbilityEvent.CompleteEvent.class);
+        hook(ABILITY, ABILITY_TOGGLE, IAbilityEvent.ToggleEvent.class);
+        hook(ABILITY, ABILITY_TOGGLE_TICK, IAbilityEvent.ToggleUpdateEvent.class);
+
+        // Chained ability context (chain-level lifecycle hooks)
+        hook(CHAINED_ABILITY, CHAIN_START, IChainEvent.StartEvent.class);
+        hook(CHAINED_ABILITY, CHAIN_NEXT, IChainEvent.NextEvent.class);
+        hook(CHAINED_ABILITY, CHAIN_COMPLETE, IChainEvent.CompleteEvent.class);
+        hook(CHAINED_ABILITY, CHAIN_INTERRUPT, IChainEvent.InterruptEvent.class);
     }
 
     private void initializeForgeHooks() {
