@@ -46,6 +46,7 @@ import noppes.npcs.controllers.data.AbilityScript;
 import noppes.npcs.controllers.data.ChainedAbilityScript;
 import net.minecraft.entity.EntityLivingBase;
 import kamkeel.npcs.controllers.sync.handlers.PlayerAbilitySyncHelper;
+import kamkeel.npcs.entity.EntityEnergyBarrier;
 import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.entity.player.EntityPlayerMP;
 import net.minecraft.nbt.NBTTagCompound;
@@ -1379,6 +1380,17 @@ public class AbilityController implements IAbilityHandler {
             health = ext.modifyBarrierHealth(ability, caster, health);
         }
         return health;
+    }
+
+    /**
+     * Fire modifyBarrierMeleeDamage on all extenders. Cumulative — each extender's output feeds the next.
+     */
+    public float fireModifyBarrierMeleeDamage(EntityEnergyBarrier barrier, EntityLivingBase attacker, float baseDamage) {
+        float damage = baseDamage;
+        for (IAbilityExtender ext : extenders) {
+            damage = ext.modifyBarrierMeleeDamage(barrier, attacker, damage);
+        }
+        return damage;
     }
 
     /**

@@ -1,5 +1,7 @@
 package kamkeel.npcs.entity;
 
+import kamkeel.npcs.addon.DBCAddon;
+import kamkeel.npcs.controllers.AbilityController;
 import kamkeel.npcs.controllers.data.ability.util.AbilityTargetHelper;
 import kamkeel.npcs.controllers.data.ability.data.energy.EnergyBarrierData;
 import kamkeel.npcs.network.packets.data.energy.BarrierClientSyncPacket;
@@ -15,6 +17,7 @@ import net.minecraft.util.DamageSource;
 import net.minecraft.world.World;
 import noppes.npcs.CustomNpcs;
 import noppes.npcs.EventHooks;
+import noppes.npcs.config.ConfigMain;
 import noppes.npcs.controllers.data.MagicData;
 import noppes.npcs.controllers.data.PlayerData;
 import noppes.npcs.entity.EntityNPCInterface;
@@ -438,8 +441,19 @@ public abstract class EntityEnergyBarrier extends EntityEnergyAbility {
 
         float damage = amount * barrierData.meleeDamageMultiplier;
 
-        // Apply magic interactions from attacker's magic vs barrier's magic
         Entity attacker = source.getEntity();
+
+        // A barrier is a plain Entity, so no LivingHurtEvent fires for it and nothing scales the
+        // hit the way it would against a living target - vanilla hands us the bare attackDamage
+        // attribute. Run the scaling here instead, or the barrier only ever takes a point of it.
+        if (attacker instanceof EntityLivingBase) {
+            damage = AbilityController.Instance.fireModifyBarrierMeleeDamage(this, (EntityLivingBase) attacker, damage);
+        }
+        if (attacker instanceof EntityPlayer && ConfigMain.AttributesEnabled && !DBCAddon.IsAvailable()) {
+            damage = AttributeAttackUtil.calculateOutgoing((EntityPlayer) attacker, damage);
+        }
+
+        // Apply magic interactions from attacker's magic vs barrier's magic
         if (attacker != null) {
             MagicData attackerMagic = null;
             if (attacker instanceof EntityPlayer) {
