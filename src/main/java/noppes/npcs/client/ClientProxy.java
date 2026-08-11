@@ -854,6 +854,19 @@ public class ClientProxy extends CommonProxy {
         return Minecraft.getMinecraft().currentScreen != null;
     }
 
+    @Override
+    public void loadComplete() {
+        // Deferred from load() so TConstruct has registered its own tabs first - registering
+        // ours before it left the vanilla tab duplicated.
+        if (ConfigClient.InventoryGuiEnabled) {
+            MinecraftForge.EVENT_BUS.register(new TabRegistry());
+            if (TabRegistry.getTabList().isEmpty()) {
+                TabRegistry.registerTab(new InventoryTabVanilla());
+            }
+            TabRegistry.registerTab(new InventoryTabCustomNpc());
+        }
+    }
+
     public void buildPackageIndex() {
         try {
             PackageFinder.init(Thread.currentThread().getContextClassLoader());

@@ -64,7 +64,6 @@ import nikedemos.markovnames.generators.MarkovSlavic;
 import nikedemos.markovnames.generators.MarkovSpanish;
 import nikedemos.markovnames.generators.MarkovWelsh;
 import noppes.npcs.compat.PixelmonHelper;
-import noppes.npcs.config.ConfigClient;
 import noppes.npcs.config.ConfigMain;
 import noppes.npcs.config.LoadConfiguration;
 import noppes.npcs.config.legacy.LegacyConfig;
@@ -120,9 +119,6 @@ import noppes.npcs.entity.old.EntityNpcNagaMale;
 import noppes.npcs.entity.old.EntityNpcSkeleton;
 import noppes.npcs.scripted.NpcAPI;
 import somehussar.janino.AdvancedClassFilter;
-import tconstruct.client.tabs.InventoryTabCustomNpc;
-import tconstruct.client.tabs.InventoryTabVanilla;
-import tconstruct.client.tabs.TabRegistry;
 
 import java.io.File;
 import java.util.HashSet;
@@ -347,15 +343,10 @@ public class CustomNpcs {
 
     @EventHandler
     public void loadComplete(FMLLoadCompleteEvent ev) {
-        if (ev.getSide().isClient()) {
-            if (ConfigClient.InventoryGuiEnabled) {
-                MinecraftForge.EVENT_BUS.register(new TabRegistry());
-                if (TabRegistry.getTabList().isEmpty()) {
-                    TabRegistry.registerTab(new InventoryTabVanilla());
-                }
-                TabRegistry.registerTab(new InventoryTabCustomNpc());
-            }
-        }
+        // Runs after every other mod has loaded. Kept on the proxy: the client side registers
+        // inventory tabs, and naming those types here would drag client-only GUI classes into
+        // a class the server loads.
+        proxy.loadComplete();
         proxy.buildPackageIndex();
 
         // Load built-in animations on the client so they're available for ability preview.
