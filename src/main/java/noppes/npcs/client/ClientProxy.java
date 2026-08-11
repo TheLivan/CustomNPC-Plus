@@ -852,8 +852,7 @@ public class ClientProxy extends CommonProxy {
 
     @Override
     public void loadComplete() {
-        // Deferred from load() so TConstruct has registered its own tabs first - registering
-        // ours before it left the vanilla tab duplicated.
+        // Deferred from load() so TConstruct registers its tabs first
         if (ConfigClient.InventoryGuiEnabled) {
             MinecraftForge.EVENT_BUS.register(new TabRegistry());
             if (TabRegistry.getTabList().isEmpty()) {
