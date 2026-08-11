@@ -45,7 +45,10 @@ import net.minecraftforge.common.util.Constants;
 import noppes.npcs.controllers.data.AbilityScript;
 import noppes.npcs.controllers.data.ChainedAbilityScript;
 import net.minecraft.entity.EntityLivingBase;
+import kamkeel.npcs.controllers.sync.handlers.PlayerAbilitySyncHelper;
+import kamkeel.npcs.entity.EntityEnergyBarrier;
 import net.minecraft.entity.player.EntityPlayer;
+import net.minecraft.entity.player.EntityPlayerMP;
 import net.minecraft.nbt.NBTTagCompound;
 import noppes.npcs.CustomNpcs;
 import noppes.npcs.LogWriter;
@@ -470,8 +473,24 @@ public class AbilityController implements IAbilityHandler {
                         pData.abilityData.lockAbility(name);
                         changed = true;
                     }
+
+                    // An active toggle holds the resolved Ability directly and keeps ticking it,
+                    // so drop it without firing onToggle against an unregistered ability.
+                    if (uuid != null && !uuid.isEmpty()) {
+                        pData.abilityData.setToggleEntryDirect(uuid, 0);
+                    }
+                    pData.abilityData.setToggleEntryDirect(name, 0);
+
+                    if (pData.hotbarData != null) {
+                        pData.hotbarData.validateSlots();
+                    }
+
                     if (changed) {
                         pData.save();
+                    }
+
+                    if (pData.player instanceof EntityPlayerMP) {
+                        PlayerAbilitySyncHelper.syncAbilities((EntityPlayerMP) pData.player);
                     }
                 }
             }
@@ -1361,6 +1380,17 @@ public class AbilityController implements IAbilityHandler {
             health = ext.modifyBarrierHealth(ability, caster, health);
         }
         return health;
+    }
+
+    /**
+     * Fire modifyBarrierMeleeDamage on all extenders. Cumulative — each extender's output feeds the next.
+     */
+    public float fireModifyBarrierMeleeDamage(EntityEnergyBarrier barrier, EntityLivingBase attacker, float baseDamage) {
+        float damage = baseDamage;
+        for (IAbilityExtender ext : extenders) {
+            damage = ext.modifyBarrierMeleeDamage(barrier, attacker, damage);
+        }
+        return damage;
     }
 
     /**
