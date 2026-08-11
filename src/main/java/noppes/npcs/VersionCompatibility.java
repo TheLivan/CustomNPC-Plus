@@ -14,25 +14,25 @@ import java.util.Collection;
 import java.util.List;
 
 public class VersionCompatibility {
-    public static int ModRev = 24;
+    public static int ModRev = 23;
 
     public static void CheckNpcCompatibility(EntityNPCInterface npc, NBTTagCompound compound) {
         if (npc.npcVersion == ModRev)
             return;
-        if (npc.npcVersion < 24) {
-            // Fire projectiles used to ignite unconditionally. The ignite check now also requires
-            // pBurnItem, which reads false when the key is absent, so restore it for anything
-            // saved before the flag existed.
-            if (compound.hasKey("pEffect") && !compound.hasKey("pBurnItem")) {
-                if (EnumPotionType.fromOrdinal(compound.getInteger("pEffect")) == EnumPotionType.Fire) {
-                    compound.setBoolean("pBurnItem", true);
-                }
-            }
-        }
         if (npc.npcVersion < 23) {
             if (compound.hasKey("AimWhileShooting")) {
                 boolean aimShot = compound.getBoolean("AimWhileShooting");
                 compound.setInteger("AimType", !aimShot ? 0 : 1);
+            }
+
+            // Fire projectiles used to ignite unconditionally. The ignite check now also requires
+            // pBurnItem, which reads false when the key is absent, so restore it for anything
+            // saved before the flag existed. Shipped alongside revision 23, so anything already
+            // at 23 was written by a build that had the flag.
+            if (compound.hasKey("pEffect") && !compound.hasKey("pBurnItem")) {
+                if (EnumPotionType.fromOrdinal(compound.getInteger("pEffect")) == EnumPotionType.Fire) {
+                    compound.setBoolean("pBurnItem", true);
+                }
             }
         }
         if (npc.npcVersion < 22) {
