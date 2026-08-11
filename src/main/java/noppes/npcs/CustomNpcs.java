@@ -317,6 +317,9 @@ public class CustomNpcs {
         new AddonManager();
         new AttributeController();
         new MagicController();
+        
+        SyncController.register();
+
 
         APIRegistry.Instance.register("CNPC+ API", "https://kamkeel.github.io/CustomNPC-Plus/");
     }

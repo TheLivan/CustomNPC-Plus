@@ -1,7 +1,8 @@
 package noppes.npcs.controllers;
 
 import kamkeel.npcs.controllers.SyncController;
-import kamkeel.npcs.network.enums.EnumSyncType;
+import kamkeel.npcs.controllers.sync.handlers.DialogCategorySyncHandler;
+import kamkeel.npcs.network.enums.SyncType;
 import net.minecraft.nbt.CompressedStreamTools;
 import net.minecraft.nbt.NBTTagCompound;
 import net.minecraft.nbt.NBTTagList;
@@ -239,7 +240,7 @@ public class DialogController implements IDialogHandler {
                 dir.mkdirs();
         }
         categories.put(category.id, category);
-        SyncController.syncUpdate(EnumSyncType.DIALOG_CATEGORY, -1, SyncController.updateDialogCat(category));
+        SyncController.syncUpdate(SyncType.DIALOG_CATEGORY, -1, DialogCategorySyncHandler.serializeCategory(category));
     }
 
     public void removeCategory(int category) {
@@ -252,7 +253,7 @@ public class DialogController implements IDialogHandler {
         for (int dia : cat.dialogs.keySet())
             dialogs.remove(dia);
         categories.remove(category);
-        SyncController.syncRemove(EnumSyncType.DIALOG_CATEGORY, category);
+        SyncController.syncRemove(SyncType.DIALOG_CATEGORY, category);
     }
 
     private boolean containsCategoryName(String name) {
@@ -302,7 +303,7 @@ public class DialogController implements IDialogHandler {
             if (file2.exists())
                 file2.delete();
             file.renameTo(file2);
-            SyncController.syncUpdate(EnumSyncType.DIALOG, category.id, dialog.writeToNBT(new NBTTagCompound()));
+            SyncController.syncUpdate(SyncType.DIALOG, category.id, dialog.writeToNBT(new NBTTagCompound()));
         } catch (Exception e) {
             LogWriter.except(e);
         }
@@ -316,7 +317,7 @@ public class DialogController implements IDialogHandler {
             return;
         category.dialogs.remove(dialog.id);
         dialogs.remove(dialog.id);
-        SyncController.syncRemove(EnumSyncType.DIALOG, dialog.id);
+        SyncController.syncRemove(SyncType.DIALOG, dialog.id);
     }
 
     private File getDir() {
