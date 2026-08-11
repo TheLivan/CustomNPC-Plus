@@ -658,6 +658,45 @@ public abstract class EntityNPCInterface extends EntityCreature implements IEnti
     }
 
     @Override
+    protected void kill() {
+        if (!worldObj.isRemote && ConfigMain.NpcVoidRecovery && posY < -64.0D && returnFromVoid())
+            return;
+        super.kill();
+    }
+
+    /**
+     * Puts the npc back on its start position after it has dropped out of the world.
+     * Offset by one block so a hole in the floor underneath does not drop it straight back down.
+     */
+    private boolean returnFromVoid() {
+        int[] start = getStartPos();
+        int x = start[0];
+        int y = start[1];
+        int z = start[2];
+
+        // A npc that fell before its start position was ever stored has the void baked into it.
+        if (y < 1 || y > worldObj.getHeight()) {
+            y = worldObj.getTopSolidOrLiquidBlock(x, z);
+            if (y < 1)
+                return false;
+            ais.startPos = new int[]{x, y, z};
+        }
+
+        setLocationAndAngles(x + 1.5D, y + 1.0D, z + 0.5D, rotationYaw, rotationPitch);
+        motionX = motionY = motionZ = 0;
+        fallDistance = 0;
+        isAirBorne = false;
+        ySize = 0;
+        extinguish();
+        getNavigator().clearPathEntity();
+        if (canFly()) {
+            ((PathNavigateFlying) getNavigator()).targetPos = null;
+            ((FlyingMoveHelper) getMoveHelper()).update = false;
+        }
+        return true;
+    }
+
+    @Override
     public boolean attackEntityFrom(DamageSource damagesource, float i) {
         if (this.worldObj.isRemote || CustomNpcs.FreezeNPCs || (damagesource.damageType != null && damagesource.damageType.equals("inWall"))) {
             return false;
